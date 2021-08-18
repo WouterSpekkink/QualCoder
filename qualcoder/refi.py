@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Copyright (c) 2020 Colin Curtain
+Copyright (c) 2021 Colin Curtain
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -39,18 +39,17 @@ import sys
 import traceback
 import uuid
 try:
-    import vlc
+    import qualcoder.vlc as vlc
 except:
     pass
-from xsd import codebook, project
 import zipfile
 
 from PyQt5 import QtWidgets, QtCore
 
-from confirm_delete import DialogConfirmDelete  # REFI export questin about line endings
-from GUI.ui_dialog_refi_export_endings import Ui_Dialog_refi_export_line_endings
-from helpers import Message
-
+from .xsd import codebook, project
+from .confirm_delete import DialogConfirmDelete  # REFI export question about line endings
+from .GUI.ui_dialog_refi_export_endings import Ui_Dialog_refi_export_line_endings
+from .helpers import Message
 
 path = os.path.abspath(os.path.dirname(__file__))
 logger = logging.getLogger(__name__)
@@ -66,7 +65,7 @@ def exception_handler(exception_type, value, tb_obj):
     #QtWidgets.QMessageBox.critical(None, _('Uncaught Exception'), text)
 
 
-class Refi_import():
+class RefiImport():
     """     Import Rotterdam Exchange Format Initiative (refi) xml documents for codebook.xml
     and project.xml
     Validate using REFI-QDA Codebook.xsd or Project-mrt2019.xsd
@@ -75,15 +74,18 @@ class Refi_import():
     #TODO parse_sources PDF - WORKS BUT FULLY WORKS ?
     #TODO load_audio_source - check it works, load transcript, transcript synchpoints, transcript codings
     #TODO load_video_source - check it works, load transcript, transcript synchpoints, transcript codings
-    #TODO check imports from different vendors
+    #TODO check imports from different vendors, tried Quirkos, Maxqda
     #TODO reference external sources - relative or absolute paths
 
     file_path = None
     codes = []
     users = []
     cases = []
-    sources = []
-    variables = []  # Dictionary of Variable guid, name, variable application (cases or files/sources), last_insert_id, text or other
+    sources = []  # List of Dictionary of mediapath, guid, memo, owner, date, id, fulltext
+    sources_name = "/Sources"  # Sources folder can be named Sources or sources
+    variables = []  # List of Dictionary of Variable guid, name, variable application (cases or files/sources), last_insert_id, text or other
+    file_vars = []  # Values for each variable for each file Found within Cases Case tag
+    annotations = []  # Text source annotation references
     parent_textEdit = None
     app = None
     tree = None
@@ -105,6 +107,7 @@ class Refi_import():
         self.codes = []
         self.users = []
         self.cases = []
+        # Sources: name id fulltext mediapath memo owner date
         self.sources = []
         self.variables = []
         self.base_path = ""
@@ -325,16 +328,16 @@ class Refi_import():
         # Source loading can be slow, so use this for he progress dialog
         # Sources folder name can be capital or lower case, check and get the correct one
         contents = os.listdir(self.folder_name)
-        sources_name = "/Sources"
+        self.sources_name = "/Sources"
         for i in contents:
             if i == "sources":
-                sources_name = "/sources"
-        num_sources = len(os.listdir(self.folder_name + sources_name))
+                self.sources_name = "/sources"
+        num_sources = len(os.listdir(self.folder_name + self.sources_name))
         self.pd = QtWidgets.QProgressDialog(_("Project Import"), "", 0, num_sources, None)
         self.pd.setWindowModality(QtCore.Qt.WindowModal)
         self.pd_value = 0
 
-        # Parse xml
+        # Parse xml for users, codebook, sources, journals, project description, variable names
         with open(self.folder_name + "/project.qde", "r") as xml_file:
             self.xml = xml_file.read()
         result = self.xml_validation("project")
@@ -354,58 +357,161 @@ class Refi_import():
                 codes = c.getchildren()[0]  # <Codes> tag is only element
                 count = 0
                 for code in codes:
-                    # recursive search through each Code in Codes
+                    # Recursive search through each Code in Codes
                     count += self.sub_codes(code, None)
                 self.parent_textEdit.append(_("Parse codes and categories. Loaded: " + str(count)))
             if c.tag == "{urn:QDA-XML:project:1.0}Variables":
                 count = self.parse_variables(c)
-                self.parent_textEdit.append(_("Parse file variables. Loaded: ") + str(count[0]))
-                self.parent_textEdit.append(_("Parse case variables. Loaded: ") + str(count[1]))
-            if c.tag == "{urn:QDA-XML:project:1.0}Notes":
-                self.parent_textEdit.append(_("Parsing journal notes. Loaded: " + str(count)))
+                self.parent_textEdit.append(_("Parse variables. Loaded: ") + str(count))
             if c.tag == "{urn:QDA-XML:project:1.0}Description":
                 self.parent_textEdit.append(_("Parsing and loading project memo"))
                 self.parse_project_description(c)
 
-        # Parse cases and sources after the variables components parsed
-        # Need to fill placeholders and values for variables for sources and cases
+        # Parse Cases element for any file variable values (No case name and only one sourceref)
+        # Fill a list of dictionaries of these variable values
+        self.parse_cases_for_file_variables(root)
+        self.parent_textEdit.append(_("Parsed cases for file variables. Loaded: ") + str(len(self.file_vars)))
+
+        # Parse Sources element after the variables components parsed
+        # Variables caseOrFile will be 'file' for ALL variables, to change later if needed
+        children = root.getchildren()
+        for c in children:
+            if c.tag == "{urn:QDA-XML:project:1.0}Sources":
+                count = self.parse_sources(c)
+                self.parent_textEdit.append(_("Parsing sources. Loaded: " + str(count)))
+
+        # Parse Notes after sources. Some Notes are text annotations
+        for c in children:
+            if c.tag == "{urn:QDA-XML:project:1.0}Notes":
+                self.parse_notes(c)
+                self.parent_textEdit.append(_("Parsing Notes. Loaded: " + str(count)))
+
+        # Fill attributes table for File variables drawn fom Cases.Case tags
+        # After Sources are loaded
+        self.fill_file_attribute_values()
+
+        # Parse Cases element and update variables already assigned as 'file' if needed
         children = root.getchildren()
         for c in children:
             # print(c.tag)
             if c.tag == "{urn:QDA-XML:project:1.0}Cases":
                 count = self.parse_cases(c)
                 self.parent_textEdit.append(_("Parsing cases. Loaded: " + str(count)))
-            if c.tag == "{urn:QDA-XML:project:1.0}Sources":
-                '''pd_value += 1
-                pd.setLabelText(_("Sources"))
-                pd.setValue(pd_value)'''
-                count = self.parse_sources(c)
-                self.parent_textEdit.append(_("Parsing sources. Loaded: " + str(count)))
         self.clean_up_case_codes_and_case_text()
-        self.parent_textEdit.append(self.file_path + _(" loaded."))
 
+        # Parse Sets element and update variables
+        children = root.getchildren()
+        for c in children:
+            # print(c.tag)
+            if c.tag == "{urn:QDA-XML:project:1.0}Sets":
+                self.parse_sets(c)
+                self.parent_textEdit.append(_("Parsing sets."))
+
+        # Wrap up
+        self.parent_textEdit.append(self.file_path + _(" loaded."))
         # Remove temporary extract folder
         try:
             shutil.rmtree(self.folder_name)
         except OSError as e:
             logger.debug(str(e) + " " + self.folder_name)
-
         # Change the user name to an owner name from the import
         if len(self.users) > 0:
             self.app.settings['codername'] = self.users[0]['name']
             self.app.write_config_ini(self.app.settings)
-
+        self.pd.close()
         msg = _("REFI-QDA PROJECT IMPORT EXPERIMENTAL FUNCTION - NOT FULLY TESTED\n")
         msg += _("Audio/video transcripts: transcript codings and synchpoints not tested.\n")
-        msg += _("Sets and Graphs not imported as QualCoder does not have this functionality.\n")
+        msg += _("Set components may be imported as file attributes.\n")
+        msg += _("Graphs not imported as QualCoder does not have this functionality.\n")
         msg += _("Boolean variables treated as character (text). Integer variables treated as floating point. \n")
-        msg += _("All variables are stored as text, but cast as text or float during operations.\n")
+        msg += _("All variables are stored as text. Cast as text or float for SQL operations.\n")
         msg += _("Relative paths to external files are untested.\n")
         msg += _("Select a coder name in Settings dropbox, otherwise coded text and media may appear uncoded.")
         Message(self.app, _('REFI-QDA Project import'), msg, "warning").exec_()
 
+    def parse_cases_for_file_variables(self, root):
+        """ Parse Cases element for each Case. Look for any file variables (No case name and only one sourceref).
+        Fill out file_vars list """
+
+        self.file_vars = []
+        children = root.getchildren()
+        for el in children:
+            if el.tag == "{urn:QDA-XML:project:1.0}Cases":
+                print(el.tag)
+                for c in el.getchildren():
+                    self.parse_case_for_file_variables(c)
+
+    def parse_case_for_file_variables(self, e_case):
+        """ File variables and their values can be stored in the Case element
+        Variables for files stored in Case have one SourceRef and no Case name.
+        This approach is used by MAXQDA and Quirkos and ?
+
+        <Case guid="d9001bcb-0803-4b06-b4d4-be0accd558a9">
+        <VariableValue>
+        <VariableRef targetGUID="3ba84074-e1af-4234-9773-1a71bb5c54de"/>
+        <TextValue>0</TextValue>
+        </VariableValue>
+        <VariableValue>
+        <VariableRef targetGUID="96868d37-d832-4d19-bf5e-9bd0792ab8e2"/>
+        <TextValue>1</TextValue>
+        </VariableValue>
+        <SourceRef targetGUID="e92903a3-0fdb-473d-9ae2-58b8d1d68014"/>
+        </Case>
+        """
+
+        if e_case.get("name") is not None:
+            return
+        ec = e_case.getchildren()
+        count = 0
+        file_guid = None
+        for el in ec:
+            # A variable assigned to a source
+            if el.tag == "{urn:QDA-XML:project:1.0}SourceRef":
+                #print("el source ref tag ", el.tag, el.get(("targetGUID")))
+                count += 1
+                file_guid = el.get("targetGUID")
+        if file_guid is None or count != 1:
+            return
+        # Get variable details from tags
+        ec = e_case.getchildren()
+        for el in ec:
+            var_guid = None
+            value = None
+            if el.tag == "{urn:QDA-XML:project:1.0}VariableValue":
+                for v_element in el.getchildren():
+                    if v_element.tag == "{urn:QDA-XML:project:1.0}VariableRef":
+                        var_guid = v_element.get("targetGUID")
+                    if v_element.tag in (
+                    "{urn:QDA-XML:project:1.0}TextValue", "{urn:QDA-XML:project:1.0}BooleanValue",
+                    "{urn:QDA-XML:project:1.0}IntegerValue", "{urn:QDA-XML:project:1.0}FloatValue",
+                    "{urn:QDA-XML:project:1.0}DateValue", "{urn:QDA-XML:project:1.0}DateTimeValue"):
+                        value = v_element.text
+                attr_val = {'file_guid': file_guid, 'var_guid': var_guid, 'value': value}
+                # Get attribute name by linking guids
+                for attr in self.variables:
+                    if attr['guid'] == var_guid:
+                        attr_val['name'] = attr['name']
+                        break
+                self.file_vars.append(attr_val)
+
+    def fill_file_attribute_values(self):
+        """ Fill file attributes from file_vars which were extracted from Cases.Case tag.
+         Prepared with: parse_cases_for_file_variables. """
+
+        now_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        cur = self.app.conn.cursor()
+        sql = "insert into attribute(name, attr_type, value,id,date,owner) values (?,?,?,?,?,?)"
+        for s in self.sources:
+            for v in self.file_vars:
+                if v['file_guid'] == s['guid']:
+                    cur.execute(sql, (v['name'], "file", v['value'], s['id'], now_date, self.app.settings['codername']))
+        self.app.conn.commit()
+
     def parse_variables(self, element):
         """ Parse the Variables element.
+        Assign 'file'' to the variable caseOrFile as a default position.
+        NOTE: This is overwritten when it is later checked to be a case or file variable.
+        In Cases Case element the SourceRef may refer to a file
         Example format:
         <Variable guid="51dc3bcd-5454-47ff-a4d6-ea699144410d" name="Cases:Age group" typeOfVariable="Text">
         <Description />
@@ -420,55 +526,43 @@ class Refi_import():
 
         now_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
         cur = self.app.conn.cursor()
-        casevarcount = 0
-        filevarcount = 0
+        var_count = 0
         for e in element.getchildren():
-            #print(e.tag, e.get("name"), e.get("guid"), e.get("typeOfVariable"))
+            print(e.tag, e.get("name"), e.get("guid"), e.get("typeOfVariable"))
             # <Variable name="Cases:something"> or ?
-            name = ""
-            caseOrFile = "file"
-            try:
-                name = e.get("name").split(':')[1]
-                caseOrFile = e.get("name").split(':')[0]
-                if caseOrFile == "Cases":
-                    caseOrFile = "case"
-                else:
-                    caseOrFile = "file"
-            except IndexError:
-                name = e.get("name")
-
-            valuetype = e.get("typeOfVariable")  # may need to tweak Text
+            name = e.get("name")
+            valuetype = e.get("typeOfVariable")
             if valuetype in("Text", "Boolean", "Date", "DateTime"):
                 valuetype = "character"
             if valuetype in ("Integer", "Float"):
                 valuetype = "numeric"
-            variable = {"name": name, "caseOrFile": caseOrFile, "guid": e.get("guid"), "id": None, "memo": "", "valuetype": valuetype}
+            # Default variable type to "file"
+            variable = {"name": name, "caseOrFile": "file", "guid": e.get("guid"), "id": None, "memo": "", "valuetype": valuetype}
             # Get the description text
             d_elements = e.getchildren()
             for d in d_elements:
                 memo = ""
                 #print("Memo ", d.tag)
-                if e.tag != "{urn:QDA-XML:codebook:1:0}Description":
+                if e.tag != "{urn:QDA-XML:project:1:0}Description":
                     memo = d.text
                 variable["memo"] = memo
 
-            # insert variable type into database
+            # Insert variable type into database
+            # CaseOrFile is designated 'file'' - to be updated
             try:
                 cur.execute(
                     "insert into attribute_type (name,date,owner,memo,caseOrFile, valuetype) values(?,?,?,?,?,?)"
-                    , (name, now_date, self.app.settings['codername'], variable["memo"], caseOrFile, valuetype))
+                    , (name, now_date, self.app.settings['codername'], variable["memo"], "file", valuetype))
                 self.app.conn.commit()
-                if caseOrFile == "case":
-                    casevarcount += 1
-                else:
-                    filevarcount += 1
-
+                var_count += 1
+                cur.execute("select last_insert_rowid()")
+                variable['id'] = cur.fetchone()[0]
             except sqlite3.IntegrityError as e:
-                QtWidgets.QMessageBox.warning(None, _("Variable import error"), _("Variable name already exists: ") + name)
-
-            # refer to the variables later
+                Message(self.app, _("Variable import error"), _("Variable name already exists: ") + name, "warning").exec_()
+            # Refer to the variables later
+            # To update caseOrFile and to assign attributes
             self.variables.append(variable)
-        return [filevarcount, casevarcount]
+        return [var_count]
 
     def parse_cases(self, element):
         """ Parse the Cases element.
@@ -477,7 +571,7 @@ class Refi_import():
         Enter empty values for Variables for each Case.
         Second parse: read variable values and update in attributes table.
 
-        Quirkos - Cases have no name attribute , so use the case count  as a name
+        Quirkos - Case has no name attribute. Case is used to link variables to files
 
         Note: some Codes in CodeBook are Cases - they use the same guid
 
@@ -503,61 +597,79 @@ class Refi_import():
         for e in element.getchildren():
             #print("CASE TAG", e.tag, "CASE NAME", e.get("name"), "GUID", e.get("guid"))  # tmp
             item = {"name": e.get("name"), "guid": e.get("guid"), "owner": self.app.settings['codername'], "memo": "", "caseid": None}
-            # Quirkos: Cases have no name attribute
+
+            # Quirkos, MAXQDA: Cases have no name attribute
             if item['name'] is None:
-                item['name'] = str(count)
-            # Get the description text
-            d_elements = e.getchildren()
-            item['memo'] = ""
-            for d in d_elements:
-                #print("Memo ", d.tag)
-                if e.tag != "{urn:QDA-XML:codebook:1:0}Description":
-                    item['memo'] = d.text
+                pass  # File variable, see parse_cases_for_file_variables
+            else:
+                # Get the description text
+                d_elements = e.getchildren()
+                item['memo'] = ""
+                for d in d_elements:
+                    #print("Memo ", d.tag)
+                    if d.tag == "{urn:QDA-XML:project:1:0}Description":
+                        #print("case memo")
+                        item['memo'] = d.text
 
-            # Enter Case into sqlite and keep a copy in  a list
-            try:
-                cur.execute("insert into cases (name,memo,owner,date) values(?,?,?,?)"
-                    ,(item['name'], item['memo'], item['owner'], now_date))
-                self.app.conn.commit()
-                cur.execute("select last_insert_rowid()")
-                item['caseid'] = cur.fetchone()[0]
-                self.cases.append(item)
-                count += 1
-            except Exception as e:
-                self.parent_textEdit.append(_('Error entering Case into database') + '\n' + str(e))
-                logger.error("item:" + str(item) + ", " + str(e))
-
-            # Create an empty attribute entry for each Case and variable in the attributes table
-            sql = "insert into attribute (name, value, id, attr_type, date, owner) values (?,?,?,?,?,?)"
-            for v in self.variables:
-                print(v)  # tmp
-                if v['caseOrFile'] == 'case':
-                    cur.execute(sql, (v['name'], "", item['caseid'], 'case', now_date, self.app.settings['codername']))
+                # Enter Case into sqlite and keep a copy in  a list
+                try:
+                    cur.execute("insert into cases (name,memo,owner,date) values(?,?,?,?)"
+                        ,(item['name'], item['memo'], item['owner'], now_date))
                     self.app.conn.commit()
+                    cur.execute("select last_insert_rowid()")
+                    item['caseid'] = cur.fetchone()[0]
+                    self.cases.append(item)
+                    count += 1
+                except Exception as e:
+                    self.parent_textEdit.append(_('Error entering Case into database') + '\n' + str(e))
+                    logger.error("item:" + str(item) + ", " + str(e))
 
-            # look for VariableValue tag, extract and enter into
-            for vv in d_elements:
-                guid = None
-                value = None
-                if vv.tag == "{urn:QDA-XML:project:1.0}VariableValue":
-                    for v_element in vv.getchildren():
-                        if v_element.tag == "{urn:QDA-XML:project:1.0}VariableRef":
-                            guid = v_element.get("targetGUID")
-                        if v_element.tag in ("{urn:QDA-XML:project:1.0}TextValue", "{urn:QDA-XML:project:1.0}BooleanValue",
-                        "{urn:QDA-XML:project:1.0}IntegerValue", "{urn:QDA-XML:project:1.0}FloatValue",
-                        "{urn:QDA-XML:project:1.0}DateValue", "{urn:QDA-XML:project:1.0}DateTimeValue"):
-                            value = v_element.text
-                    print(item, guid, value)  # tmp
-                    # Get attribute name by linking guids
-                    attr_name = ""
+                #TODO revise after further testing
+                '''# Create an empty attribute entry for each Case and variable in the attributes table
+                sql = "insert into attribute (name, value, id, attr_type, date, owner) values (?,?,?,?,?,?)"
+                for v in self.variables:
+                    print(v)  # tmp
+                    if v['caseOrFile'] == 'case':
+                        cur.execute(sql, (v['name'], "", item['caseid'], 'case', now_date, self.app.settings['codername']))
+                        self.app.conn.commit()'''
+
+                # Use case_vars to update attribute-type from 'file' to 'case'
+                case_vars = []
+                # look for VariableValue tag, extract and enter into
+                for vv in d_elements:
+                    guid = None
+                    value = None
+                    if vv.tag == "{urn:QDA-XML:project:1.0}VariableValue":
+                        for v_element in vv.getchildren():
+                            if v_element.tag == "{urn:QDA-XML:project:1.0}VariableRef":
+                                guid = v_element.get("targetGUID")
+                                case_vars.append(guid)
+                            if v_element.tag in ("{urn:QDA-XML:project:1.0}TextValue", "{urn:QDA-XML:project:1.0}BooleanValue",
+                            "{urn:QDA-XML:project:1.0}IntegerValue", "{urn:QDA-XML:project:1.0}FloatValue",
+                            "{urn:QDA-XML:project:1.0}DateValue", "{urn:QDA-XML:project:1.0}DateTimeValue"):
+                                value = v_element.text
+                        #print(item, guid, value)  # tmp
+                        # Get attribute name by linking guids
+                        attr_name = ""
+                        for attr in self.variables:
+                            if attr['guid'] == guid:
+                                attr_name = attr['name']
+                        # Insert into the attribute table
+                        '''sql = "update attribute set value=? where name=? and attr_type='case'and id=?"
+                        cur.execute(sql, (value, attr_name, item['caseid']))'''
+                        sql = "insert into attribute (name, value, id, attr_type, date, owner) values (?,?,?,?,?,?)"
+                        cur.execute(sql,
+                            (attr_name, value, item['caseid'], 'case', now_date, self.app.settings['codername']))
+                        self.app.conn.commit()
+
+                # Update attribute_type replace 'file' with 'case'
+                case_vars = list(set(case_vars))
+                sql = "update attribute_type set caseOrFile='case' where attribute_type.name=?"
+                for c in case_vars:
                     for attr in self.variables:
                         if attr['guid'] == guid:
-                            attr_name = attr['name']
-
-                    # Update the attribute table
-                    sql = "update attribute set value=? where name=? and attr_type='case'and id=?"
-                    cur.execute(sql, (value, attr_name, item['caseid']))
-                    self.app.conn.commit()
+                            cur.execute(sql, [attr['name']])
+                self.app.conn.commit()
         return count
 
     def clean_up_case_codes_and_case_text(self):
@@ -635,6 +747,7 @@ class Refi_import():
          MAXQDA uses sources, NVIVO uses Sources
          """
 
+        #guid = element.get("guid")
         name = element.get("name")
         creating_user_guid = element.get("creatingUser")
         if creating_user_guid is None:
@@ -652,20 +765,20 @@ class Refi_import():
         path = element.get("path")
         # Sources folder name can be capital or lower case, check and get the correct one
         contents = os.listdir(self.folder_name)
-        sources_name = "/Sources"
+        self.sources_name = "/Sources"
         for i in contents:
             if i == "sources":
-                sources_name = "/sources"
+                self.sources_name = "/sources"
         # Determine internal or external path
         source_path = ""
         path_type = ""
         if path is None:
             source_path = element.get("plainTextPath").split('internal:/')[1]
-            source_path = self.folder_name + sources_name + source_path
+            source_path = self.folder_name + self.sources_name + source_path
             path_type = "internal"
         if path is not None and path.find("internal://") == 0:
             path = element.get("path").split('internal:/')[1]
-            source_path = self.folder_name + sources_name + path
+            source_path = self.folder_name + self.sources_name + path
             path_type = "internal"
         if path is not None and path.find("relative://") == 0:
             source_path = self.base_path + path.split('relative://')[1]
@@ -699,7 +812,7 @@ class Refi_import():
         if path_type == "relative":
             #TODO check this works
             media_path = "images:" + self.base_path + source_path
-            print(source_path, media_path)
+            print("relative path", source_path, media_path)
         memo = ""
         for e in element.getchildren():
             if e.tag == "{urn:QDA-XML:project:1.0}Description":
@@ -710,7 +823,9 @@ class Refi_import():
         self.app.conn.commit()
         cur.execute("select last_insert_rowid()")
         id_ = cur.fetchone()[0]
-
+        source = {'name': name, 'id': id_, 'fulltext': "", 'mediapath': media_path, 'memo': memo,
+                 'owner': creating_user, 'date': create_date, 'guid': element.get('guid')}
+        self.sources.append(source)
         # Parse PictureSelection and VariableValue elements to load codings and variables
         for e in element.getchildren():
             if e.tag == "{urn:QDA-XML:project:1.0}PictureSelection":
@@ -799,10 +914,22 @@ class Refi_import():
         self.app.conn.commit()
         cur.execute("select last_insert_rowid()")
         id_ = cur.fetchone()[0]
+        source = {'name': name, 'id': id_, 'fulltext': "", 'mediapath': media_path, 'memo': memo,
+                 'owner': creating_user, 'date': create_date, 'guid': element.get('guid')}
+        self.sources.append(source)
 
+        no_transcript = True
         for e in element.getchildren():
             if e.tag == "{urn:QDA-XML:project:1.0}Transcript":
+                no_transcript = False
                 self.parse_transcript_with_codings_and_syncpoints(name, id_, creating_user, e)
+        if no_transcript:
+            # Create an empty transcription file
+            now_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            txt_name = name + ".transcribed"
+            cur.execute('insert into source(name,fulltext,mediapath,memo,owner,date) values(?,"","","",?,?)',
+                        (txt_name, creating_user, now_date))
+            self.app.conn.commit()
 
         # Parse AudioSelection and VariableValue elements to load codings and variables
         for e in element.getchildren():
@@ -846,10 +973,22 @@ class Refi_import():
         self.app.conn.commit()
         cur.execute("select last_insert_rowid()")
         av_id = cur.fetchone()[0]
+        source = {'name': name, 'id': av_id, 'fulltext': "", 'mediapath': media_path, 'memo': memo,
+                 'owner': creating_user, 'date': create_date, 'guid': element.get('guid')}
+        self.sources.append(source)
 
+        no_transcript = True
         for e in element.getchildren():
             if e.tag == "{urn:QDA-XML:project:1.0}Transcript":
+                no_transcript = False
                 self.parse_transcript_with_codings_and_syncpoints(name, av_id, creating_user, e)
+        if no_transcript:
+            # Create an empty transcription file
+            now_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            txt_name = name + ".transcribed"
+            cur.execute('insert into source(name,fulltext,mediapath,memo,owner,date) values(?,"","","",?,?)',
+                        (txt_name, creating_user, now_date))
+            self.app.conn.commit()
 
         # Parse VideoSelection and VariableValue elements to load codings and variables
         for e in element.getchildren():
@@ -917,11 +1056,7 @@ class Refi_import():
             destination = self.app.project_path + "/documents/" + name
         # Sources folder name can be capital or lower case, check and get the correct one
         contents = os.listdir(self.folder_name)
-        sources_name = "/Sources/"
-        for i in contents:
-            if i == "sources":
-                sources_name = "/sources/"
-        source_path = self.folder_name + sources_name + plain_text_path
+        source_path = self.folder_name + self.sources_name + plain_text_path
         #print("Source path: ", source_path)
         #print("Destination: ", destination)
         try:
@@ -1028,6 +1163,7 @@ class Refi_import():
         Example format:
         <VideoSelection begin="115" modifyingUser="5D2B49D0-9562-4DD3-9EE3-CE2B965E413C" end="1100" guid="BB652E1B-5CCC-4AA3-9C7F-E5D9BD99F6BF"
         creatingUser="5D2B49D0-9562-4DD3-9EE3-CE2B965E413C" creationDateTime="2020-11-10T18:01:23Z" name="(115,0),(1100,0)" modifiedDateTime="2020-11-10T18:01:23Z">
+        <Description>Memo to video file</Description>
         <Coding guid="2E0A7A4D-453B-4A1B-9784-4FC5B8432816" creatingUser="5D2B49D0-9562-4DD3-9EE3-CE2B965E413C" creationDateTime="2020-11-10T18:01:23Z">
         <CodeRef targetGUID="86392BC1-A364-4904-A406-87A7E025EBF7"/>
         </Coding>
@@ -1036,7 +1172,6 @@ class Refi_import():
 
         seg_start = int(element.get("begin"))
         seg_end = int(element.get("end"))
-        memo = element.get("name")
         create_date = element.get("creationDateTime")
         if create_date is None:
             create_date = element.get("modifiedDateTime")
@@ -1056,6 +1191,12 @@ class Refi_import():
                 creating_user = u['name']
 
         cur = self.app.conn.cursor()
+        memo = ""
+        for e in element:
+            if e.tag == "{urn:QDA-XML:project:1.0}Description":
+                memo = e.text
+                if memo is None:
+                    memo = ""
         for e in element:
             if e.tag == "{urn:QDA-XML:project:1.0}Coding":
                 # Get the code id from the CodeRef guid
@@ -1085,7 +1226,7 @@ class Refi_import():
             destination = self.app.project_path + "/documents/" + name
             try:
                 shutil.copyfile(source_path, destination)
-                print("PDF IMPORT", source_path, destination)
+                #print("PDF IMPORT", source_path, destination)
             except Exception as e:
                 self.parent_textEdit.append(_('Cannot copy PDF file from: ') + source_path + "\nto: " + destination + '\n' + str(e))
         if path_type == "absolute":
@@ -1136,7 +1277,7 @@ class Refi_import():
             if e.tag == "{urn:QDA-XML:project:1.0}Description":
                 memo = e.text
         source = {'name': name, 'id': -1, 'fulltext': "", 'mediapath': None, 'memo': memo,
-                 'owner': self.app.settings['codername'], 'date': create_date}
+                 'owner': self.app.settings['codername'], 'date': create_date, 'guid': element.get('guid')}
 
         # Check plain text file line endings for Windows 2 character \r\n
         add_ending = False
@@ -1189,10 +1330,17 @@ class Refi_import():
             except Exception as e:
                 self.parent_textEdit.append(_('Cannot copy TextSource file from: ') + source_path + "\nto: " + destination + '\n' + str(e))
 
-        # Parse forPlainTextSelection elements for Coding elements and VariableValues
+        # Parse PlainTextSelection elements for Coding elements
         for e in element.getchildren():
             if e.tag == "{urn:QDA-XML:project:1.0}PlainTextSelection":
                 self._load_codings_for_text(source, e)
+        # Parse PlainTextSelection elements for NoteRef (annotation) elements
+        for e in element.getchildren():
+            if e.tag == "{urn:QDA-XML:project:1.0}NoteRef":
+                self.annotations.append({"NoteRef": e.get("targetGUID"), "TextSource": source["guid"]})
+        # Parse elements for VariableValues
+        # This approach used by MAXQDA but not by QUIRKOS
+        for e in element.getchildren():
             if e.tag == "{urn:QDA-XML:project:1.0}VariableValue":
                 self.parse_variable_value(e, id_, creating_user)
 
@@ -1200,6 +1348,8 @@ class Refi_import():
         """ Parse VariableValue element.
         Needs two parses - one to get the variable name and one to get the value.
         Enter details into attributes table.
+        This is for when variables are stored within the Source element.
+
         Called from load_picture_source, load_text_source, load_audio_source, load_video_source
 
         Params:
@@ -1226,7 +1376,7 @@ class Refi_import():
             if var_el.tag in value_types and var_el.text is not None:
                 value = var_el.text
                 value = value.strip()
-        #print("varname:", var_name, " value:",value)  # tmp
+        #print("Text attribute:", var_name, " value:",value)  # tmp
         cur = self.app.conn.cursor()
         insert_sql = "insert into attribute (name, attr_type, value, id, date, owner) values(?,'file',?,?,?,?)"
         placeholders = [var_name, value, id_, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"), creating_user]
@@ -1236,22 +1386,25 @@ class Refi_import():
     def _load_codings_for_text(self, source, element):
         """ These are PlainTextSelection elements.
         These elements contain a Coding element and a Description element.
-        The Description element is treated as an Annotation.
+        The Description element is treated as a coding memo.
 
-        Some Coding guids withh match a Case guid. This is Case text.
+        NOTE: MAXQDA. Some PlainTextSelection elements DO NOT have a Coding element, but DO HAVE a Description element.
+        For these, load the Description text as an annotation.
+
+        Some Coding guids match a Case guid. This is Case text.
 
         Example format:
         < PlainTextSelection guid = "08cbced0-d736-44c8-8fd6-eb4d29fe46c5" name = "" startPosition = "1967"
         endPosition = "2207" creatingUser = "5c94bc9e-db8c-4f1d-9cd6-e900c7440860" creationDateTime = "2019-06-07T03:36:36Z"
         modifyingUser = "5c94bc9e-db8c-4f1d-9cd6-e900c7440860" modifiedDateTime = "2019-06-07T03:36:36Z" >
-        < Description / >
+        < Description / > or <Description>some text</Description>
         < Coding guid = "76414714-63c4-4a25-a47e-66fef80bd52e" creatingUser = "5c94bc9e-db8c-4f1d-9cd6-e900c7440860"
         creationDateTime = "2019-06-06T06:27:01Z" >
         < CodeRef targetGUID = "2dfba8c9-59f5-4424-99d6-ea9bce18134b" / >
         < / Coding >
         < / PlainTextSelection >
 
-        :param entry - the source text dictionary
+        :param source - the source text dictionary
         :param element - the PlainTextSelection element
         """
 
@@ -1271,16 +1424,16 @@ class Refi_import():
             if u['guid'] == creating_user_guid:
                 creating_user = u['name']
         seltext = source['fulltext'][pos0:pos1]
+
+        # The Description element text inside a PlainTextSelection is a coding memo
+        memo = ""
         for e in element:
-            # Treat description text as an annotation
             if e.tag == "{urn:QDA-XML:project:1.0}Description" and e.text is not None:
-                cur.execute("insert into annotation (fid,pos0, pos1,memo,owner,date) \
-                values(?,?,?,?,?,?)" ,(source['id'], pos0, pos1,
-                e.text, creating_user, create_date))
-                self.app.conn.commit()
+                memo = e.text
+        annotation = True
+        for e in element:
             if e.tag == "{urn:QDA-XML:project:1.0}Coding":
-                memo = ""
-                #TODO can coded text be memoed?
+                annotation = False
                 # Get the code id from the CodeRef guid
                 cid = None
                 codeRef = e.getchildren()[0]
@@ -1291,13 +1444,30 @@ class Refi_import():
                     memo,date) values(?,?,?,?,?,?,?,?)", (cid, source['id'],
                     seltext, pos0, pos1, creating_user, memo, create_date))
                 self.app.conn.commit()
+        if annotation:
+            sql = "insert into annotation (fid,pos0,pos1,memo,owner,date) values (?,?,?,?,?,?)"
+            cur.execute(sql, [source['id'], int(pos0), int(pos1), memo, creating_user, create_date])
+            self.app.conn.commit()
 
     def parse_notes(self, element):
         """ Parse the Notes element.
-        Notes are possibly journal entries.
-        Example format:
-        <Note guid="4691a8a0-d67c-4dcc-91d6-e9075dc230cc" name="Assignment Progress Memo" richTextPath="internal://4691a8a0-d67c-4dcc-91d6-e9075dc230cc.docx" plainTextPath="internal://4691a8a0-d67c-4dcc-91d6-e9075dc230cc.txt" creatingUser="5c94bc9e-db8c-4f1d-9cd6-e900c7440860" creationDateTime="2019-06-04T06:11:56Z" modifyingUser="5c94bc9e-db8c-4f1d-9cd6-e900c7440860" modifiedDateTime="2019-06-17T08:00:58Z">
+        Notes may be journal entries or annotations.
+        Example journal format:
+        <Note guid="4691a8a0-d67c-4dcc-91d6-e9075dc230cc" name="Assignment Progress Memo"
+        richTextPath="internal://4691a8a0-d67c-4dcc-91d6-e9075dc230cc.docx"
+        plainTextPath="internal://4691a8a0-d67c-4dcc-91d6-e9075dc230cc.txt"
+        creatingUser="5c94bc9e-db8c-4f1d-9cd6-e900c7440860"
+        creationDateTime="2019-06-04T06:11:56Z"
+        modifyingUser="5c94bc9e-db8c-4f1d-9cd6-e900c7440860"
+        modifiedDateTime="2019-06-17T08:00:58Z">
         <Description>Steps towards completing the assignment</Description>
+        </Note>
+
+        Annotation Note:
+        <Note guid="0f758eeb-d61d-4e91-b250-79861c3869a6" modifyingUser="df241da2-bca0-4ad9-83c1-b89c98d83567"
+        modifiedDateTime="2021-01-15T23:37:54Z" >
+        <PlainTextContent>Memo for only title coding in regulation</PlainTextContent>
+        <PlainTextSelection guid="d61907b2-d0d4-48dc-b8b7-5e4f7ae5faa6" startPosition="455" endPosition="596" />
         </Note>
 
         :param element Notes
@@ -1322,25 +1492,151 @@ class Refi_import():
             for u in self.users:
                 if u['guid'] == creating_user_guid:
                     creating_user = u['name']
-            # journal paths starts with internal://
-            if e.get("plainTextPath") is not None:
+
+            # Check if the Note is a TextSource Annotation
+            annotation = False
+            for a in self.annotations:
+                if a['NoteRef'] == e.get("guid"):
+                    annotation = True
+                    self.insert_annotation(a['TextSource'], e)
+                    break
+
+            # Journal paths starts with internal://
+            if e.get("plainTextPath") is not None and not annotation:
                 path = e.get("plainTextPath").split('internal:/')[1]
-                path = self.folder_name + '/Sources' + path
-                #print(path)
+                # sources or Sources folder
+                path = self.folder_name + self.sources_name + path
                 jentry = ""
                 try:
                     with open(path) as f:
                         jentry = f.read()
-                except Exception as e:
-                    self.parent_textEdit.append(_('Trying to read Note element: ') + path + '\n'+ str(e))
+                except Exception as err:
+                    self.parent_textEdit.append(_('Trying to read Note element: ') + path + '\n'+ str(err))
                 cur.execute("insert into journal(name,jentry,owner,date) values(?,?,?,?)",
                 (name, jentry, creating_user, create_date))
                 self.app.conn.commit()
-            else:
-                #TODO
-                print(_("Note element is not a journal."))
             count += 1
         return count
+
+    def insert_annotation(self, source_guid, element):
+        """ Insert annotation into database
+        Annotation Note:
+        <Note guid="0f758eeb-d61d-4e91-b250-79861c3869a6" modifyingUser="df241da2-bca0-4ad9-83c1-b89c98d83567"
+        modifiedDateTime="2021-01-15T23:37:54Z" >
+        <PlainTextContent>Memo for only title coding in regulation</PlainTextContent>
+        <PlainTextSelection guid="d61907b2-d0d4-48dc-b8b7-5e4f7ae5faa6" startPosition="455" endPosition="596" />
+        </Note>
+
+        param: source_guid : guid of the Text source
+        param: element The Note element
+        """
+
+        user_guid = element.get("modifyingUser")
+        owner = None
+        for u in self.users:
+            if u['guid'] == user_guid:
+                owner = u['name']
+        if owner is None:
+            user_guid = element.get("creatingUser")
+            for u in self.users:
+                if u['guid'] == user_guid:
+                    owner = u['name']
+        if owner is None:
+            owner = self.app.settings['codername']
+        date = element.get("modifiedDateTime")
+        if date is not None:
+            date = date.replace('T', ' ')
+            date = date.replace('Z', '')
+        else:
+            date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        for el in element:
+            if el.tag == "{urn:QDA-XML:project:1.0}PlainTextContent":
+                memo = el.text
+            if el.tag == "{urn:QDA-XML:project:1.0}PlainTextSelection":
+                pos0 = el.get("startPosition")
+                pos1 = el.get("endPosition")
+        if pos0 is None or pos1 is None or memo is None:
+            #print("None values ", pos0, pos1, memo)
+            return
+        fid = None
+        for s in self.sources:
+            if source_guid == s['guid']:
+                fid = s['id']
+        if fid is None:
+            return
+        cur = self.app.conn.cursor()
+        sql = "insert into annotation (fid,pos0,pos1,memo,owner,date) values (?,?,?,?,?,?)"
+        cur.execute(sql, [fid, int(pos0), int(pos1), memo, owner, date])
+        self.app.conn.commit()
+
+    def parse_sets(self, element):
+        """ Parse the Sets element
+
+        <Sets>
+        <Set name="Document group 1" guid="46467993-B426-49DD-9707-B5958EBA9870">
+        <Description>Memo to document group</Description>
+        <MemberSource targetGUID="631251CC-9FB4-4131-BEA8-35947084C409"/>
+        <MemberSource targetGUID="9DDD19C4-168C-4103-BBAD-08D4BD10A145"/>
+        </Set>
+        </Sets>
+        """
+
+        for e in element.getchildren():
+            if e.tag == "{urn:QDA-XML:project:1.0}Set":
+                self.parse_set(e)
+
+    def parse_set(self, element):
+        """ Parse the Set element
+
+        <Set name="Document group 1" guid="46467993-B426-49DD-9707-B5958EBA9870">
+        <Description>Memo to document group</Description>
+        <MemberSource targetGUID="631251CC-9FB4-4131-BEA8-35947084C409"/>
+        <MemberSource targetGUID="9DDD19C4-168C-4103-BBAD-08D4BD10A145"/>
+        </Set>
+        """
+
+        name = element.get("name")
+        memo = ""
+        for el in element.getchildren():
+            if el.tag == "{urn:QDA-XML:project:1.0}Description":
+                memo = el.text
+                if memo is None:
+                    memo = ""
+                break
+        set_sources = []  # List of sources associated with this Set
+        for el in element.getchildren():
+            if el.tag == "{urn:QDA-XML:project:1.0}MemberSource":
+                target_guid = el.get("targetGUID")
+                for s in self.sources:
+                    if target_guid == s['guid']:
+                        set_sources.append(s['id'])
+        if set_sources:
+            self.insert_set_source_variables(name, memo, set_sources)
+
+    def insert_set_source_variables(self, name, memo, set_sources):
+        """ Insert the variable name and values for the set source.
+        Assume the variable is a character type
+        param: name : the variable name
+        param: memo : variable memo
+        param: set_sources : list of source ids """
+
+        now_date = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        cur = self.app.conn.cursor()
+        try:
+            cur.execute(
+                "insert into attribute_type (name,date,owner,memo,caseOrFile, valuetype) values(?,?,?,?,?,?)"
+                , (name, now_date, self.app.settings['codername'], memo, "file", "character"))
+            self.app.conn.commit()
+            cur.execute("select last_insert_rowid()")
+        except sqlite3.IntegrityError as e:
+            Message(self.app, _("Variable import error"), _("Variable name already exists: ") + name, "warning").exec_()
+            return
+
+        insert_sql = "insert into attribute (name, attr_type, value, id, date, owner) values(?,'file',?,?,?,?)"
+        for id_ in set_sources:
+            placeholders = [name, name, id_, now_date, self.app.settings['codername']]
+            cur.execute(insert_sql, placeholders)
+            self.app.conn.commit()
 
     def parse_project_description(self, element):
         """ Parse the Description element
@@ -1413,7 +1709,7 @@ class Refi_import():
             return False
 
 
-class Refi_line_endings(QtWidgets.QDialog):
+class RefiLineEndings(QtWidgets.QDialog):
     """Refi line endings dialog."""
 
     def __init__(self, app, parent=None):
@@ -1426,7 +1722,7 @@ class Refi_line_endings(QtWidgets.QDialog):
         self.setStyleSheet(font)
 
 
-class Refi_export(QtWidgets.QDialog):
+class RefiExport(QtWidgets.QDialog):
     """ Create Rotterdam Exchange Format Initiative (refi) xml documents for
     codebook.xml and project.xml
     NOTES:
@@ -1439,8 +1735,9 @@ class Refi_export(QtWidgets.QDialog):
     users = []
     sources = []
     guids = []
-    note_files = []  # contains guid.txt name and note text
-    variables = []  # contains dictionary of variable xml, guid, name
+    note_files = []  # List of Dictionaries of guid.txt name and note text
+    annotations = []  # List of Dictionaries of anid, fid, pos0, pos1, memo, owner, date
+    variables = []  # List of Dictionaries of variable xml, guid, name
     xml = ""
     parent_textEdit = None
     app = None
@@ -1459,6 +1756,7 @@ class Refi_export(QtWidgets.QDialog):
         self.get_codes()
         self.get_users()
         self.get_sources()
+        self.annotations = self.app.get_annotations()
         if self.export_type == "codebook":
             self.codebook_exchange_xml()
             self.xml_validation("codebook")
@@ -1479,6 +1777,8 @@ class Refi_export(QtWidgets.QDialog):
 
         Create an unzipped folder with a /Sources folder and project.qde xml document
         Then create zip wih suffix .qdpx
+
+        #TODO put file variables inside Cases.Case elements as with Quirkos
         """
 
         project_name = self.app.project_name[:-4]
@@ -1504,7 +1804,7 @@ class Refi_export(QtWidgets.QDialog):
 
         add_line_ending_for_maxqda = False
         add_line_ending_for_atlas = False
-        ui = Refi_line_endings(self.app)
+        ui = RefiLineEndings(self.app)
         ui.exec_()
         if ui.ui.radioButton_maxqda.isChecked():
             add_line_ending_for_maxqda = True
@@ -1552,6 +1852,16 @@ class Refi_export(QtWidgets.QDialog):
         export_path = self.app.project_path[:-4]
         shutil.make_archive(prep_path, 'zip', prep_path)
         os.rename(prep_path + ".zip", prep_path + ".qdpx")
+
+        # Add suffix to project name if it already exists
+        counter = 0
+        while os.path.exists(export_path + ".qdpx"):
+            extension = ""
+            if counter > 0:
+                extension = "_" + str(counter)
+            export_path = export_path + extension
+            counter += 1
+
         shutil.copyfile(prep_path + ".qdpx", export_path + ".qdpx")
         try:
             shutil.rmtree(prep_path)
@@ -1615,7 +1925,6 @@ class Refi_export(QtWidgets.QDialog):
 
         if text is None:
             return ""
-
         text = text.replace('&', '&#038;')  # &#x26; &amp;
         text = text.replace('"', '&#034;')  # &#x22; &quot;
         text = text.replace("'", '&#039;')  # &#x27; &apos;
@@ -1634,7 +1943,7 @@ class Refi_export(QtWidgets.QDialog):
         self.xml = '<?xml version="1.0" encoding="utf-8"?>\n'
         self.xml += '<Project '
         self.xml += 'xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
-        self.xml += 'name="' + self.app.project_name + '" '
+        self.xml += 'name="' + self.convert_xml_predefined_entities(self.app.project_name) + '" '
         self.xml += 'origin="' + self.app.version + '" '
         # There is no creating user in QualCoder
         guid = self.create_guid()
@@ -1649,7 +1958,7 @@ class Refi_export(QtWidgets.QDialog):
         # add users
         self.xml += "<Users>\n"
         for row in self.users:
-            self.xml += '<User guid="' + row['guid'] + '" name="' + row['name'] + '" />\n'
+            self.xml += '<User guid="' + row['guid'] + '" name="' + self.convert_xml_predefined_entities(row['name']) + '" />\n'
         self.xml += "</Users>\n"
         self.xml += self.codebook_xml()
         self.xml += self.variables_xml()
@@ -1672,7 +1981,7 @@ class Refi_export(QtWidgets.QDialog):
         cur = self.app.conn.cursor()
         cur.execute("select name, memo, caseOrFile,valuetype from attribute_type")
         results = cur.fetchall()
-        if results == []:
+        if not results:
             return xml
         xml = '<Variables>\n'
         for r in results:
@@ -1710,9 +2019,9 @@ class Refi_export(QtWidgets.QDialog):
         xml = '<Description>' + self.convert_xml_predefined_entities(memo) + '</Description>\n'
         return xml
 
-    def create_note_xml(self, journal):
+    def create_journal_note_xml(self, journal):
         """ Create a Note xml for journal entries
-        Appends xml in notes list.
+        To be appended to the in notes list. To add to the Notes element
         Appends file name and journal text in notes_files list. This is exported to Sources folder.
         Called by: notes_xml
         Format:
@@ -1743,6 +2052,42 @@ class Refi_export(QtWidgets.QDialog):
         self.note_files.append([guid + '.txt', journal[1]])
         return xml
 
+    def create_annotation_note_xml(self, ann):
+        """ Create a Note xml for text source annotations
+        Appends xml in notes list.
+        Appends to the annotations list
+        Called by: ??? notes_xml
+
+        Format:
+        Annotation Note:
+        <Note guid="0f758eeb-d61d-4e91-b250-79861c3869a6" modifyingUser="df241da2-bca0-4ad9-83c1-b89c98d83567"
+        modifiedDateTime="2021-01-15T23:37:54Z" >
+        <PlainTextContent>Memo for only title coding in regulation</PlainTextContent>
+        <PlainTextSelection guid="d61907b2-d0d4-48dc-b8b7-5e4f7ae5faa6" startPosition="455" endPosition="596" />
+        </Note>
+
+        Inside <TextSource> is <NoteRef targetGUID="0f758eeb-d61d-4e91-b250-79861c3869a6"/>  Liks to the annotation detail.
+
+        :param ann: Dictionaries of anid, fid, pos0, pos1, memo, owner, date,  NoteRef_guid
+        :returns a guid for a NoteRef
+        """
+
+        xml = '<Note guid="' + ann['NoteRef_guid'] + '" '
+        user = ""
+        for u in self.users:
+            if u['name'] == ann['owner']:
+                user = u['guid']
+                break
+        xml += 'creatingUser="' + user + '" '
+        xml += 'creationDateTime="' + self.convert_timestamp(ann['date']) + '" '
+        xml += '>\n'
+        xml += '<PlainTextContent>' + ann['memo'] + '</PlainTextContent>\n'
+        guid = self.create_guid()
+        xml += '<PlainTextSelection guid="' + guid + '" startPosition="' + str(ann['pos0'])
+        xml += '" endPosition="' + str(ann['pos1']) + '" />\n'
+        xml += '</Note>\n'
+        return xml
+
     def notes_xml(self):
         """ Get journal entries and store them as Notes.
         Collate note_xml list into final xml
@@ -1753,17 +2098,18 @@ class Refi_export(QtWidgets.QDialog):
         :returns xml
         """
 
-        self.note_files = []
         # Get journal entries
         cur = self.app.conn.cursor()
         sql = "select name, jentry, date, owner from journal where jentry is not null"
         cur.execute(sql)
         j_results = cur.fetchall()
-        if j_results == []:
-            return ''
+        if j_results == [] and self.annotations == []:
+            return ""
         xml = '<Notes>\n'
         for j in j_results:
-            xml += self.create_note_xml(j)
+            xml += self.create_journal_note_xml(j)
+        for ann in self.annotations:
+            xml += self.create_annotation_note_xml(ann)
         xml += '</Notes>\n'
         return xml
 
@@ -1777,7 +2123,7 @@ class Refi_export(QtWidgets.QDialog):
         cur = self.app.conn.cursor()
         cur.execute("select caseid, name, memo, owner, date from cases")
         result = cur.fetchall()
-        if result == []:
+        if not result:
             return xml
         xml = '<Cases>\n'
         for r in result:
@@ -1932,6 +2278,7 @@ class Refi_export(QtWidgets.QDialog):
         :returns xml String
         """
 
+        #TODO after Coding: NoteRef and VariableValue for each Source element
         xml = "<Sources>\n"
         for s in self.sources:
             guid = self.create_guid()
@@ -1955,6 +2302,11 @@ class Refi_export(QtWidgets.QDialog):
                     xml += '<Description>' + memo + '</Description>\n'
                 xml += self.text_selection_xml(s['id'])
                 xml += self.source_variables_xml(s['id'])
+                for a in self.annotations:
+                    if a['fid'] == s['id']:
+                        a['NoteRef_guid'] = self.create_guid()
+                        xml += '<NoteRef targetGUID="'+ a['NoteRef_guid'] + '" />\n'
+                        break
                 xml += '</TextSource>\n'
             # PDF document
             if (s['mediapath'] is None and s['name'][-4:].lower() == '.pdf') or \
@@ -1978,6 +2330,10 @@ class Refi_export(QtWidgets.QDialog):
                 xml += 'creatingUser="' + self.user_guid(s['owner']) + '" '
                 xml += 'name="' + self.convert_xml_predefined_entities(s['name']) + '">\n'
                 xml += self.text_selection_xml(s['id'])
+                for a in self.annotations:
+                    if a['fid'] == s['id']:
+                        a['NoteRef_guid'] = self.create_guid()
+                        break
                 xml += '</Representation>'
                 xml += self.source_variables_xml(s['id'])
                 xml += '</PDFSource>\n'
@@ -1990,9 +2346,9 @@ class Refi_export(QtWidgets.QDialog):
                     # Internal filename is a guid identifier
                     xml += 'path="internal://' + s['filename'] + '" '
                 else:
-                    xml += 'path="absolute://' + s['external'].replace('&', '&#038;') + '" '
+                    xml += 'path="absolute://' + self.convert_xml_predefined_entities(s['external']) + '" '
                 xml += 'guid="' + guid + '" '
-                xml += 'name="' + s['name'].replace('&', '&#038;') + '" >\n'
+                xml += 'name="' + self.convert_xml_predefined_entities(s['name']) + '" >\n'
                 memo = self.convert_xml_predefined_entities(s['memo'])
                 if memo != '':
                     xml += '<Description>' + memo + '</Description>\n'
@@ -2031,7 +2387,7 @@ class Refi_export(QtWidgets.QDialog):
                     xml +='path="absolute://' + self.convert_xml_predefined_entities(s['external']) + '" '
                 xml += 'guid="' + guid + '" '
                 xml += 'name="' + self.convert_xml_predefined_entities(s['name']) + '" >\n'
-                memo = self.code_guid(s['memo'])
+                memo = self.convert_xml_predefined_entities(self.code_guid(s['memo']))
                 if memo != '':
                     xml += '<Description>' + memo + '</Description>\n'
                 xml += self.transcript_xml(s)
@@ -2044,7 +2400,7 @@ class Refi_export(QtWidgets.QDialog):
     def text_selection_xml(self, id_):
         """ Get and complete text selection xml.
         xml is in form:
-        <PlainTextSelection><Coding><CodeRef/></Coding></PlainTextSelection>
+        <PlainTextSelection><Description></Description><Coding><CodeRef/></Coding></PlainTextSelection>
         Called by: sources_xml
 
         :param id_ file id integer
@@ -2053,7 +2409,7 @@ class Refi_export(QtWidgets.QDialog):
         """
 
         xml = ""
-        sql = "select cid, seltext, pos0, pos1, owner, date from code_text "
+        sql = "select cid, seltext, pos0, pos1, owner, date, memo from code_text "
         sql += "where fid=?"
         cur = self.app.conn.cursor()
         cur.execute(sql, [id_, ])
@@ -2062,22 +2418,24 @@ class Refi_export(QtWidgets.QDialog):
             xml += '<PlainTextSelection guid="' + self.create_guid() + '" '
             xml += 'startPosition="' + str(r[2]) + '" '
             xml += 'endPosition="' + str(r[3]) + '" '
-            xml += 'name="'
-            # Replace predefined entities in XML
-            name = self.convert_xml_predefined_entities(r[1])
-            xml += name + '" '
+            xml += 'name="' + self.convert_xml_predefined_entities(r[1]) + '" '
             xml += 'creatingUser="' + self.user_guid(r[4]) + '" '
             xml += 'creationDateTime="' + self.convert_timestamp(r[5]) + '">\n'
+            if r[6] != "":  # Description element comes before coding element
+                memo = self.convert_xml_predefined_entities(r[6])
+                xml += '<Description>' + memo + '</Description>\n'
             xml += '<Coding guid="' + self.create_guid() + '" '
-            xml += 'creatingUser="' + self.user_guid(r[4]) + '" >'
+            xml += 'creatingUser="' + self.user_guid(r[4]) + '" >\n'
             xml += '<CodeRef targetGUID="' + self.code_guid(r[0]) + '" />\n'
             xml += '</Coding>\n'
+
             xml += '</PlainTextSelection>\n'
         return xml
 
     def picture_selection_xml(self, id_):
         """ Get and complete picture selection xml.
         Called by: sources_xml
+        <PictureSelection><Description></Description><Coding><CodeRef/></Coding></PictureSelection>
 
         :param id_ is the source id
 
@@ -2096,13 +2454,17 @@ class Refi_export(QtWidgets.QDialog):
             xml += 'firstY="' + str(int(r[3])) + '" '
             xml += 'secondX="' + str(int(r[2] + r[4])) + '" '
             xml += 'secondY="' + str(int(r[3] + r[5])) + '" '
-            xml += 'name="' + str(r[8]) + '" '
+            xml += 'name="' + self.convert_xml_predefined_entities(r[8]) + '" '
             xml += 'creatingUser="' + self.user_guid(r[6]) + '" '
             xml += 'creationDateTime="' + self.convert_timestamp(r[7]) + '">\n'
+            if r[8] is not None and r[8] != "":
+                memo = self.convert_xml_predefined_entities(r[8])
+                xml += '<Description>' + memo + '</Description>\n'
             xml += '<Coding guid="' + self.create_guid() + '" '
-            xml += 'creatingUser="' + self.user_guid(r[6]) + '" >'
+            xml += 'creatingUser="' + self.user_guid(r[6]) + '" >\n'
             xml += '<CodeRef targetGUID="' + self.code_guid(r[1]) + '"/>\n'
             xml += '</Coding>\n'
+
             xml += '</PictureSelection>\n'
         return xml
 
@@ -2114,6 +2476,7 @@ class Refi_export(QtWidgets.QDialog):
         begin="14706" creatingUser="AD68FBE7‐E1EE‐4A82‐A279‐23CC698C89EB" creationDateTime="2018‐03‐
         27T19:34:32Z" modifiedDateTime="2018‐03‐27T19:34:55Z" guid="0EF270BA‐47AD‐4107‐B78F‐7697362BCA44"
         name="00:14.70 – 00:17.70">
+        <Description></Description>
         <Coding creatingUser="AD68FBE7‐E1EE‐4A82‐A279‐23CC698C89EB"
         creationDateTime="2018‐03‐27T19:36:01Z" guid="04EBEC7D‐EAB4‐43FC‐8167‐ADB14F921143">
         <CodeRef targetGUID="9F43FE32‐C2CB‐4BA8‐B766‐A0734C826E49"/>
@@ -2121,8 +2484,8 @@ class Refi_export(QtWidgets.QDialog):
         </VideoSelection>
 
         :param id_ is the source id Integer
-
-        :returns xml String
+        :param mediatype : is the String of
+        :returns xml String Audio or Video
         """
 
         xml = ""
@@ -2135,8 +2498,11 @@ class Refi_export(QtWidgets.QDialog):
             xml += '<' + mediatype + 'Selection guid="' + self.create_guid() + '" '
             xml += 'begin="' + str(int(r[2])) + '" '
             xml += 'end="' + str(int(r[3])) + '" '
-            xml += 'name="' + str(r[6]) + '" '
-            xml += 'creatingUser="' + self.user_guid(r[4]) + '" >'
+            xml += 'name="' + self.convert_xml_predefined_entities(r[6]) + '" '
+            xml += 'creatingUser="' + self.user_guid(r[4]) + '" >\n'
+            if r[6] != "":
+                memo = self.convert_xml_predefined_entities(r[6])
+                xml += '<Description>' + memo + '</Description>\n'
             xml += '<Coding guid="' + self.create_guid() + '" '
             xml += 'creatingUser="' + self.user_guid(r[4]) + '" '
             xml += 'creationDateTime="' + self.convert_timestamp(r[5]) + '">\n'
@@ -2148,7 +2514,17 @@ class Refi_export(QtWidgets.QDialog):
     def transcript_xml(self, source):
         """ Find any transcript of media source.
         Need to add timestamp synchpoints.
-        Replace & xml char with &#038;
+
+        Either PlainTextContent or plainTextPath MUST be filled, not both
+
+        <Transcript>
+        <Description></Description>
+            <TranscriptSelection>
+            <Description></Description>
+            <Coding></Coding>
+            <NoteRef></NoteRef>
+            </TranscriptSelection>
+        </Transcript>
 
         Called by: sources_xml
 
@@ -2157,11 +2533,13 @@ class Refi_export(QtWidgets.QDialog):
         :returns xml String
         """
 
+
         xml = ""
         for t in self.sources:
             if t['name'] == source['name'] + '.transcribed':
                 # Internal filename is a guid identfier
-                xml = '<Transcript plainTextPath="internal://' + t['plaintext_filename'] + '" '
+                xml = '<Transcript plainTextPath="internal://'
+                xml += self.convert_xml_predefined_entities(t['plaintext_filename']) + '" '
                 xml += 'creatingUser="' + self.user_guid(t['owner']) + '" '
                 xml += 'creationDateTime="' + self.convert_timestamp(t['date']) + '" '
                 xml += 'guid="' + self.create_guid() + '" '
@@ -2209,7 +2587,7 @@ class Refi_export(QtWidgets.QDialog):
         for coded in results:
             #print(coded)
             xml += '<TranscriptSelection guid="' + self.create_guid() + '" '
-            xml += 'name="' + media['name'] + '" '
+            xml += 'name="' + self.convert_xml_predefined_entities(media['name']) + '" '
             xml += 'fromSyncPoint="'
             for sp in sync_list:
                 if sp[2] == coded[0]:
@@ -2509,28 +2887,31 @@ class Refi_export(QtWidgets.QDialog):
         :returns xml string
         """
 
+        if not self.codes:
+            return ""
+
         xml = '<CodeBook>\n'
         xml += '<Codes>\n'
         cats = copy(self.categories)
 
-        # add unlinked codes as top level items
+        # Add unlinked codes as top level items
         for c in self.codes:
             if c['catid'] is None:
                 xml += c['xml']
-        # add top level categories
-        for c in cats:
-            if c['supercatid'] is None and c['examine']:
-                c['examine'] = False
-                xml += '<Code guid="' + c['guid']
-                xml += '" name="' + self.convert_xml_predefined_entities(c['name'])
+        # Add top level categories
+        for ca in cats:
+            if ca['supercatid'] is None and ca['examine']:
+                ca['examine'] = False
+                xml += '<Code guid="' + ca['guid']
+                xml += '" name="' + self.convert_xml_predefined_entities(ca['name'])
                 xml += '" isCodable="false'
                 xml += '">\n'
-                memo = self.convert_xml_predefined_entities(c['memo'])
+                memo = self.convert_xml_predefined_entities(ca['memo'])
                 if memo != "":
                     xml += '<Description>' + memo + '</Description>\n'
-                # add codes in this category
+                # Add codes in this category
                 for co in self.codes:
-                    if co['catid'] == c['catid']:
+                    if co['catid'] == ca['catid']:
                         xml += co['xml']
                 xml += self.add_sub_categories(c['catid'], cats)
                 xml += '</Code>\n'

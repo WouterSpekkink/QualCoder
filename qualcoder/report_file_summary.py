@@ -33,11 +33,11 @@ from PIL.ExifTags import TAGS
 import platform
 import sys
 import traceback
-import vlc
+import qualcoder.vlc as vlc
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from GUI.ui_dialog_report_file_summary import Ui_Dialog_file_summary
+from .GUI.ui_dialog_report_file_summary import Ui_Dialog_file_summary
 
 
 path = os.path.abspath(os.path.dirname(__file__))
@@ -53,33 +53,6 @@ def exception_handler(exception_type, value, tb_obj):
     logger.error(_("Uncaught exception:") + "\n" + text)
     QtWidgets.QMessageBox.critical(None, _('Uncaught Exception'), text)
 
-
-'''meta_keys = {vlc.Meta.Actors: None,
-        vlc.Meta.Album: None,
-        vlc.Meta.AlbumArtist: None,
-        vlc.Meta.Artist: None,
-        vlc.Meta.ArtworkURL: None,
-        vlc.Meta.Copyright: None,
-        vlc.Meta.Date: None,
-        vlc.Meta.Description: None,
-        vlc.Meta.Director: None,
-        vlc.Meta.DiscNumber: None,
-        vlc.Meta.DiscTotal: None,
-        vlc.Meta.EncodedBy: None,
-        vlc.Meta.Episode: None,
-        vlc.Meta.Genre: None,
-        vlc.Meta.Language: None,
-        vlc.Meta.NowPlaying: None,
-        vlc.Meta.Publisher: None,
-        vlc.Meta.Rating: None,
-        vlc.Meta.Season: None,
-        vlc.Meta.Setting: None,
-        vlc.Meta.ShowName: None,
-        vlc.Meta.Title: None,
-        vlc.Meta.TrackID: None,
-        vlc.Meta.TrackNumber: None,
-        vlc.Meta.TrackTotal: None,
-        vlc.Meta.URL: None}'''
 
 meta_keys = [vlc.Meta.Actors, vlc.Meta.Album, vlc.Meta.AlbumArtist, vlc.Meta.Artist,
         vlc.Meta.ArtworkURL, vlc.Meta.Copyright, vlc.Meta.Date, vlc.Meta.Description,

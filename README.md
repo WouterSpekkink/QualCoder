@@ -1,15 +1,14 @@
 # QualCoder
 QualCoder is a qualitative data analysis application written in python3 (python 3.6 or newer versions) and pyqt5.
 
-QualCoder projects are stored in a Sqlite database. Text files can be typed in manually or loaded from txt, odt, docx, html, htm, epub and  pdf files. Images, video and audio can also be imported for coding. Codes can be assigned to text, images and a/v selections and grouped into categories in hierarchical fashion. Various types of reports can be produced including visual coding graphs, coder comparisons and coding frequencies.
+Text files can be typed in manually or loaded from txt, odt, docx, html, htm, epub and  pdf files. Images, video and audio can also be imported for coding. Codes can be assigned to text, images and a/v selections and grouped into categories in hierarchical fashion. Various types of reports can be produced including visual coding graphs, coder comparisons and coding frequencies.
 
 This project has been tested under Ubuntu 20.04 and Windows 10. It has been used on Linux Mint 18.04 Lubuntu 18.04, Mac OS.
-Instructions and other information are available here: https://qualcoder.wordpress.com/ and on the Github Wiki.
+Instructions and other information are available here: https://qualcoder.wordpress.com/ and on the [Github Wiki](https://github.com/ccbogel/QualCoder/wiki).
 
 ## INSTALLATION 
 
-
-### Linux
+### Linux installation
 
 ### Prerequisites
 You will need to have a `python3.6` or newer version installed.
@@ -18,13 +17,9 @@ You will also need to have a `vlc` player installed - for audio and video.
 
 #### Debian-based Linuxes:
 
-You can install the latest debian package from https://github.com/ccbogel/QualCoder-Debians
-
-You may need to add unstable repos as described at https://www.binarytides.com/enable-testing-repo-debian/
-
 Install these modules from the command line
 
-`sudo apt install python3-lxml python3-ply python3-six python3-chardet python3-qt5 python3-pillow`
+`sudo apt install python3-lxml python3-ply python3-six python3-pdfminer python3-chardet python3-qt5 python3-pillow`
 
 On some Linux versions you will need to install pip
 
@@ -34,61 +29,60 @@ You also need to run this command from the terminal for pdf importing:
 
 `sudo python3 -m pip install pdfminer.six openpyxl ebooklib`
 
-If not using the debian package:
+In the terminal, Go to the QualCoder-master folder, type:
 
-Make the install.sh executable and run the install.sh script from the terminal. Make sure the qualcoder folder is in the same directory as the install.sh script (i.e. as it appears when you download the QualCoder-master folder). 
+`sudo python3 setup.py install`
 
-#### Fedora/CentOS/RHEL Linuxes
+To run type:
+
+`qualcoder`
+
+Alternatively, go to the qualcoder directory and type:
+
+`python3 __main__.py`
+
+#### Fedora/CentOS/RHEL installation
 
 Retrieve the current package code from this repository
 
 `git clone https://github.com/ccbogel/QualCoder.git`
 
-Install dependencies 
+Make `install_fedora.sh` executable (`chmod +x install_fedora.sh`) and run the `./install_fedora.sh` script from the terminal. Make sure the qualcoder folder is in the same directory as the install.sh script (i.e. as it appears when you download the QualCoder-master folder). The script is for python version 3.9.
 
-`sudo dnf install python3-pip python3-lxml python3-ply python3-six python3-chardet python3-qt5 python3-pillow`
+This script installs the dependencies using dnf and the ebook libraries with a work-around, specified at https://github.com/ccbogel/QualCoder/issues/72#issuecomment-695962784.
 
-QualCoder uses an Ebook library that you can currently install via a work-around, specified at https://github.com/ccbogel/QualCoder/issues/72#issuecomment-695962784
-The UNTESTED `install_fedora.sh` should install the dependencies fand a desktop start icon for Fedora. The script is for python verrsion 3.8.
-
-
-### Linux Use 
-
-`./install.sh`
-
-The qualcoder folder should be in the same directory as the install.sh script.
-
-This will install QualCoder in the /usr/share directory and create a launcher. Alternatively go to the qualcoder directory and run the qualcoder.py file in a terminal: `python3 qualcoder.py`
+Fedora uses wayland with does not work well with the Qt graphical interface (for now). I suggest you also install xwayland.
 
 
 ### Windows: 
 
-Install [Python3](https://www.python.org/downloads/) and [VLC](https://www.videolan.org/vlc/download-windows.html) or from the Windows Store. On Windows, the bit version of VLC, 32 or 64 must match the bit version of python 3. Minumum version python 3.6.
+Install  [VLC](https://www.videolan.org/vlc/download-windows.html) or from the Windows Store. 
 
-Install dependencies in the command prompt:
+NEW - the 2.7 Release contains an exe file (created on Windows 10, 64 bit).
 
-`python -m pip install pyqt5 lxml Pillow ebooklib ply chardet pdfminer.six openpyxl`
+Download the QualCoder software from: https://github.com/ccbogel/QualCoder. This is the newest, but not yet officially released, version of code. Alternatively, choose the most recent release. Click the green button "Code", and then "Download ZIP". Then, unpack the file in a selected place (e.g. desktop).
 
-or:
+Open the unpacked folder "QualCoder-master", then open the folder "qualcoder" and make a shortcut of the file "__main__.py" on the desktop - for easier access. This file is the starting file for running software.
+    
+The software is written in Python and does not have an exe file for Windows. Download and install the Python programming language. The minimum version that works for QualCoder is 3.6.  [Python3](https://www.python.org/downloads/). Download the file (at the bottom of the web site) "Windows installer (64-bit)" (or 32-bit if you have an older system) and install Python.
+
+IMORTANT: in the first window of the installation mark the option "Add Python to PATH" - it makes the last step easier.
+
+The final step, install extra modules to Python. Type the letters "cmd" in the Windows Start searching engine, and click on the black software "cmd.exe" - this is the command console for Windows. In the console paste, using the right-click context menu (ctrl+v does not work) the following:
 
 `py -m pip install pyqt5 lxml Pillow ebooklib ply chardet pdfminer.six openpyxl`
 
-To launch, you can create a shortcut to the qualcoder.py file to start QualCoder.
+Then click enter. Wait, until all modules are installed (the command phrase should be again visible: "C:\Users[Your Windows account name]> or similar).
 
-Alternatively move to the qualcoder directory and run the qualcoder.py file in from command prompt: 
+The `py` command uses the most recent installed version of python. You can use a specific version on your Windows, if you have many pythons installed, e.g. `py -3.8`  See discussion here: [Difference between py and python](https://stackoverflow.com/questions/50896496/what-is-the-difference-between-py-and-python-in-the-terminal)  You can run the cmd.exe as described above, and type `py` and Enter. The first line will tell you which version of python that command runs. To exit, press Ctrl Z.
 
-`python qualcoder.py`  or `py qualcoder.py`
+Run QualCoder from cmd.exe
+Move to the QualCoder-master folder, then type 
 
-you might need to install modules and run the program by typing python3 rather than python or py, it seems different on different Winows versions.
+`py -m qualcoder`
 
-Run QualCoder and hide the black DOS box:
-
-`C:\Windows\pyw.exe "C:\the location of your Qualcoder folder\QualCoder-master\qualcoder\qualcoder.py"`
-
-Sometimes there are problems recognising the audio/video VLC library file: libvlc.dll  
-Some solutions are to add the path of the file here: [https://stackoverflow.com/questions/42045887/python-vlc-install-problems?noredirect=1](https://stackoverflow.com/questions/42045887/python-vlc-install-problems?noredirect=1)
-
-The log file on Windows does not make use of the rotating file handler, so the log file may become large. If so, delete the log file. It will be re-created automatically.
+Run by double-click
+Open the QualCoder-master\qualcoder folder. Double-click the __main__.py file to run. You can make a shortcut to this file and keep the shortcut on the desktop.
 
 
 ### MacOS
@@ -129,10 +123,10 @@ brew install qpdf
 ```
 
 
-Assuming you downloaded the2.4 version. You can now run with:
+Assuming you downloaded the 2.5 version. You can now run with:
 
 ```
-python3 /applications/QualCoder-2.4/qualcoder/qualcoder.py
+python3 /applications/QualCoder-2.5/qualcoder/__main__.py
 ```
 
 You can install QualCoder anywhere you want, so the path above depends on where you extracted the archive.
@@ -191,8 +185,8 @@ QualCoder is distributed under the MIT LICENSE.
 
 ##  Citation APA style
 
-Curtain, C. (2021) QualCoder 2.4 [Computer software]. Retrieved from
-https://github.com/ccbogel/QualCoder/releases/tag/2.4
+Curtain, C. (2021) QualCoder 2.5 [Computer software]. Retrieved from
+https://github.com/ccbogel/QualCoder/releases/tag/2.5
 
 
 ## Leave a review
@@ -202,15 +196,4 @@ https://www.saashub.com/qualcoder-alternatives
 
 https://alternativeto.net/software/qualcoder
 
-
-## Publications using QualCoder
-Local–global linkages: Challenges in organizing functional communities for ecosocial justice. Joel Izlar, Journal of Community Practice 27(3-4) 2019
-
-Barriers to Health: Understanding the Barriers Faced by Community Intervention Projects. Vera Landrum, The University of Southern Mississippi 2020, Available from: https://aquila.usm.edu/cgi/viewcontent.cgi?article=1772&context=masters_theses
-
-Framing food geographies. S Ramsay, Masters Thesis, Stockholms Universitet 2020
-
-Seeking research software. A qualitative study of humanities scholars' information practices. Ronny Gey, Masters Thesis, Humboldt University of Berlin 2020
-
-Traditional and biomedical care pathways for mental well‐being in rural Nepal. T Pham, R Koirala, B Kohrt, International Journal of Mental Health Systems volume 15 2021
 

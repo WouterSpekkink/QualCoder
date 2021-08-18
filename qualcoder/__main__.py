@@ -27,6 +27,8 @@ https://github.com/ccbogel/QualCoder
 https://qualcoder.wordpress.com/
 """
 
+
+import base64
 import configparser
 import datetime
 import gettext
@@ -41,37 +43,41 @@ import sqlite3
 import traceback
 import urllib.request
 import webbrowser
+from copy import copy
 
 from PyQt5 import QtCore, QtGui, QtWidgets
 
-from attributes import DialogManageAttributes
-from cases import DialogCases
-from codebook import Codebook
-from code_text import DialogCodeText
-from copy import copy
-from dialog_sql import DialogSQL
-from GUI.ui_main import Ui_MainWindow
-from helpers import Message
-from import_survey import DialogImportSurvey
-from information import DialogInformation
-from journals import DialogJournals
-from manage_files import DialogManageFiles
-from manage_links import DialogManageLinks
-from memo import DialogMemo
-from refi import Refi_export, Refi_import
-from reports import DialogReportCodes, DialogReportCoderComparisons, DialogReportCodeFrequencies
-from report_code_summary import DialogReportCodeSummary
-from report_file_summary import DialogReportFileSummary
-from report_relations import DialogReportRelations
-from rqda import Rqda_import
-from settings import DialogSettings
-from special_functions import DialogSpecialFunctions
-#from text_mining import DialogTextMining
-from view_av import DialogCodeAV
-from view_graph_original import ViewGraphOriginal
-from view_image import DialogCodeImage
+from qualcoder.attributes import DialogManageAttributes
+from qualcoder.cases import DialogCases
+from qualcoder.codebook import Codebook
+from qualcoder.code_text import DialogCodeText
+from qualcoder.GUI.base64_helper import *  # qualcoder32
+from qualcoder.GUI.ui_main import Ui_MainWindow
+from qualcoder.helpers import Message
+from qualcoder.import_survey import DialogImportSurvey
+from qualcoder.information import DialogInformation
+from qualcoder.locale.base64_lang_helper import *
+from qualcoder.journals import DialogJournals
+from qualcoder.manage_files import DialogManageFiles
+from qualcoder.manage_links import DialogManageLinks
+from qualcoder.memo import DialogMemo
+from qualcoder.refi import RefiExport, RefiImport
+from qualcoder.reports import DialogReportCoderComparisons, DialogReportCodeFrequencies
+from qualcoder.report_code_summary import DialogReportCodeSummary
+from qualcoder.report_compare_coder_file import DialogCompareCoderByFile
+from qualcoder.report_codes import DialogReportCodes
+from qualcoder.report_file_summary import DialogReportFileSummary
+from qualcoder.report_relations import DialogReportRelations
+from qualcoder.report_sql import DialogSQL
+from qualcoder.rqda import Rqda_import
+from qualcoder.settings import DialogSettings
+from qualcoder.special_functions import DialogSpecialFunctions
+#from qualcoder.text_mining import DialogTextMining
+from qualcoder.view_av import DialogCodeAV
+from qualcoder.view_graph_original import ViewGraphOriginal
+from qualcoder.view_image import DialogCodeImage
 
-qualcoder_version = "QualCoder 2.4"
+qualcoder_version = "QualCoder 2.7"
 
 path = os.path.abspath(os.path.dirname(__file__))
 home = os.path.expanduser('~')
@@ -108,10 +114,10 @@ def exception_handler(exception_type, value, tb_obj):
     tb = '\n'.join(traceback.format_tb(tb_obj))
     text = 'Traceback (most recent call last):\n' + tb + '\n' + exception_type.__name__ + ': ' + str(value)
     print(text)
-    logger.error(_("Uncaught exception : ") + text)
+    #logger.error(_("Uncaught exception : ") + text)
     mb = QtWidgets.QMessageBox()
     mb.setStyleSheet("* {font-size: 10pt}")
-    mb.setWindowTitle(_('Uncaught Exception'))
+    #mb.setWindowTitle(_('Uncaught Exception'))
     mb.setText(text)
     mb.exec_()
 
@@ -204,30 +210,34 @@ class App(object):
         if path == "":
             return
         nowdate = datetime.datetime.now().astimezone().strftime("%Y-%m-%d_%H:%M:%S")
+        # result is a list of strings containing yyyy-mm-dd:hh:mm:ss|projectpath
         result = self.read_previous_project_paths()
         dated_path = nowdate + "|" + path
         if result == []:
+            result = [str(nowdate) + "|" + path]
             with open(self.persist_path, 'w') as f:
                 f.write(dated_path)
                 f.write(os.linesep)
             return
 
         proj_path = ""
-        splt = result[0].split("|") #open_menu
+        splt = result[0].split("|")
         if len(splt) == 1:
             proj_path = splt[0]
         if len(splt) == 2:
             proj_path = splt[1]
-        #print("PATH:", path, "PPATH:", proj_path)  # tmp
-        if path != proj_path:
-            result.append(dated_path)
-            result.sort()
-            with open(self.persist_path, 'w') as f:
-                for i, line in enumerate(result):
-                    f.write(line)
-                    f.write(os.linesep)
-                    if i > 8:
-                        break
+        #print("PATH:", path, "ProjPATH:", proj_path)  # tmp
+        # Compare first persisted project path to the currently open project path
+        if "|" in result[0]:  # safety check
+            if result[0].split("|")[1] != path:
+                result.append(dated_path)
+                result.sort()
+                if len(result) > 8:
+                    result = result[0:8]
+        with open(self.persist_path, 'w') as f:
+            for i, line in enumerate(result):
+                f.write(line)
+                f.write(os.linesep)
 
     def get_most_recent_projectpath(self):
         """ Get most recent project path from .qualcoder/recent_projects.txt """
@@ -273,33 +283,54 @@ class App(object):
             res.append({'id': row[0], 'name': row[1], 'memo': row[2]})
         return res
 
-    def get_text_filenames(self):
-        """ Get filenames of text files. """
-
+    def get_text_filenames(self, ids=[]):
+        """ Get filenames of text files.
+        param:
+            ids: list of Integer ids for a restricted list of files. """
+        sql = "select id, name, memo from source where (mediapath is Null or mediapath like 'docs:%') "
+        if ids != []:
+            str_ids = list(map(str, ids))
+            sql += " and id in (" + ",".join(str_ids) + ")"
+        sql += "order by lower(name)"
         cur = self.conn.cursor()
-        cur.execute("select id, name, memo from source where (mediapath is Null or mediapath like 'docs:%') order by lower(name)")
+        cur.execute(sql)
         result = cur.fetchall()
         res = []
         for row in result:
             res.append({'id': row[0], 'name': row[1], 'memo': row[2]})
         return res
 
-    def get_image_filenames(self):
-        """ Get filenames of image files only. """
+    def get_image_filenames(self, ids=[]):
+        """ Get filenames of image files only.
+        param:
+            ids: list of Integer ids for a restricted list of files. """
 
+        sql = "select id, name, memo from source where mediapath like '/images/%' or mediapath like 'images:%'"
+        if ids != []:
+            str_ids = list(map(str, ids))
+            sql += " and id in (" + ",".join(str_ids) + ")"
+        sql += " order by lower(name)"
         cur = self.conn.cursor()
-        cur.execute("select id, name, memo from source where mediapath like '/images/%' or mediapath like 'images:%' order by lower(name)")
+        cur.execute(sql)
         result = cur.fetchall()
         res = []
         for row in result:
             res.append({'id': row[0], 'name': row[1], 'memo': row[2]})
         return res
 
-    def get_av_filenames(self):
-        """ Get filenames of audio video files only. """
+    def get_av_filenames(self, ids=[]):
+        """ Get filenames of audio video files only.
+        param:
+            ids: list of Integer ids for a restricted list of files. """
 
+        sql = "select id, name, memo from source where "
+        sql += "(mediapath like '/audio/%' or mediapath like 'audio:%' or mediapath like '/video/%' or mediapath like 'video:%') "
+        if ids != []:
+            str_ids = list(map(str, ids))
+            sql += " and id in (" + ",".join(str_ids) + ")"
+        sql += " order by lower(name)"
         cur = self.conn.cursor()
-        cur.execute("select id, name, memo from source where (mediapath like '/audio/%' or mediapath like 'audio:%' or mediapath like '/video/%' or mediapath like 'video:%') order by lower(name)")
+        cur.execute(sql)
         result = cur.fetchall()
         res = []
         for row in result:
@@ -319,12 +350,12 @@ class App(object):
             res.append(dict(zip(keys, row)))
         return res
 
-    def get_data(self):
+    def get_codes_categories(self):
         """ Gets all the codes, categories.
-        Called from code_text, code_av, code_image, reports, report_crossovers """
+        Called from code_text, code_av, code_image, reports, report_relations """
 
-        categories = []
         cur = self.conn.cursor()
+        categories = []
         cur.execute("select name, catid, owner, date, memo, supercatid from code_cat order by lower(name)")
         result = cur.fetchall()
         keys = 'name', 'catid', 'owner', 'date', 'memo', 'supercatid'
@@ -392,7 +423,8 @@ class App(object):
 
     def check_and_add_additional_settings(self, data):
         """ Newer features include width and height settings for many dialogs and main window.
-        timestamp format
+        timestamp format.
+        dialog_crossovers IS dialog relations
         :param data:  dictionary of most or all settings
         :return: dictionary of all settings
         """
@@ -425,7 +457,8 @@ class App(object):
         'dialogmanagelinks_w', 'dialogmanagelinks_h',
         'docfontsize',
         'dialogreport_file_summary_splitter0', 'dialogreport_file_summary_splitter0',
-        'dialogreport_code_summary_splitter0', 'dialogreport_code_summary_splitter0'
+        'dialogreport_code_summary_splitter0', 'dialogreport_code_summary_splitter0',
+        'stylesheet'
         ]
         for key in keys:
             if key not in data:
@@ -443,17 +476,68 @@ class App(object):
         """ Originally had separate stylesheet file. Now stylesheet is coded because
         avoids potential data file import errors with pyinstaller. """
 
-        stylesheet = "* {font-size: 16px;}\n\
+        style_dark = "* {font-size: 12px; background-color: #2a2a2a; color:#eeeeee;}\n\
+        QWidget:focus {border: 2px solid #f89407;}\n\
+        QDialog {border: 1px solid #707070;}\n\
+        QLabel#label_search_regex {background-color:#808080;}\n\
+        QLabel#label_search_case_sensitive {background-color:#808080;}\n\
+        QLabel#label_search_all_files {background-color:#808080;}\n\
+        QLabel#label_font_size {background-color:#808080;}\n\
+        QLabel#label_search_all_journals {background-color:#808080;}\n\
+        QLabel#label_exports {background-color:#808080;}\n\
+        QLabel#label_time_3 {background-color:#808080;}\n\
+        QLabel#label_volume {background-color:#808080;}\n\
+        QLabel:disabled {color: #808080;}\n\
+        QSlider::handle:horizontal {background-color: #f89407;}\n\
+        QCheckBox {border: None}\n\
+        QCheckBox::indicator {border: 2px solid #808080; background-color: #2a2a2a;}\n\
+        QCheckBox::indicator::checked {border: 2px solid #808080; background-color: orange;}\n\
+        QRadioButton::indicator {border: 1px solid #808080; background-color: #2a2a2a;}\n\
+        QRadioButton::indicator::checked {border: 2px solid #808080; background-color: orange;}\n\
+        QLineEdit {border: 1px solid #808080;}\n\
+        QMenuBar::item:selected {background-color: #3498db; }\n\
+        QMenu {border: 1px solid #808080;}\n\
+        QMenu::item:selected {background-color:  #3498db;}\n\
+        QMenu::item:disabled {color: #777777;}\n\
+        QToolTip {background-color: #2a2a2a; color:#eeeeee; border: 1px solid #f89407; }\n\
+        QPushButton {background-color: #808080;}\n\
+        QPushButton:hover {border: 2px solid #ffaa00;}\n\
+        QComboBox {border: 1px solid #707070;}\n\
+        QComboBox:hover {border: 2px solid #ffaa00;}\n\
+        QGroupBox {border: None;}\n\
+        QGroupBox:focus {border: 3px solid #ffaa00;}\n\
+        QTabWidget::pane {border: 1px solid #808080;}\n\
+        QTabBar {border: 2px solid #808080;}\n\
+        QTabBar::tab {border: 1px solid #808080;}\n\
+        QTabBar::tab:selected {border: 2px solid #f89407; background-color: #707070; margin-left: 3px;}\n\
+        QTabBar::tab:!selected {border: 2px solid #707070; background-color: #2a2a2a; margin-left: 3px;}\n\
+        QTextEdit {border: 1px solid #ffaa00;}\n\
+        QTextEdit:focus {border: 2px solid #ffaa00;}\n\
+        QTableWidget {border: 1px solid #ffaa00; gridline-color: #707070;}\n\
+        QTableWidget:focus {border: 3px solid #ffaa00;}\n\
+        QListWidget::item:selected {border-left: 3px solid red; color: #eeeeee;}\n\
+        QHeaderView::section {background-color: #505050; color: #ffce42;}\n\
+        QTreeWidget::branch:selected {border-left: 2px solid red; color: #eeeeee;}\n\
+        QTreeWidget {font-size: 12px;}"
+        style_dark = style_dark.replace("* {font-size: 12", "* {font-size:" + str(settings.get('fontsize')))
+        style_dark = style_dark.replace("QTreeWidget {font-size: 12", "QTreeWidget {font-size: " + str(settings.get('treefontsize')))
+
+        style = "* {font-size: 12px; color: #000000;}\n\
         QWidget:focus {border: 2px solid #f89407;}\n\
         QComboBox:hover,QPushButton:hover {border: 2px solid #ffaa00;}\n\
         QGroupBox {border: None;}\n\
         QGroupBox:focus {border: 3px solid #ffaa00;}\n\
         QTextEdit:focus {border: 2px solid #ffaa00;}\n\
+        QListWidget::item:selected {border-left: 2px solid red; color: #000000;}\n\
         QTableWidget:focus {border: 3px solid #ffaa00;}\n\
-        QTreeWidget {font-size: 14px;}"
-        stylesheet = stylesheet.replace("* {font-size: 16", "* {font-size:" + str(settings.get('fontsize')))
-        stylesheet = stylesheet.replace("QTreeWidget {font-size: 14", "QTreeWidget {font-size: " + str(settings.get('treefontsize')))
-        return stylesheet
+        QTreeWidget::branch:selected {border-left: 2px solid red; color: #000000;}\n\
+        QTreeWidget {font-size: 12px;}"
+        style = style.replace("* {font-size: 12", "* {font-size:" + str(settings.get('fontsize')))
+        style = style.replace("QTreeWidget {font-size: 12", "QTreeWidget {font-size: " + str(settings.get('treefontsize')))
+
+        if self.settings['stylesheet'] == 'dark':
+            return style_dark
+        return style
 
     def load_settings(self):
         result = self._load_config_ini()
@@ -464,9 +548,11 @@ class App(object):
         if result['codername'] == "":
             result['codername'] = "default"
         result = self.check_and_add_additional_settings(result)
-        #TODO TEMPORARY delete in 2021
+        #TODO TEMPORARY delete in 2022
         if result['speakernameformat'] == 0:
             result['speakernameformat'] = "[]"
+        if result['stylesheet'] == 0:
+            result['stylesheet'] = "original"
         return result
 
     @property
@@ -537,7 +623,8 @@ class App(object):
             'dialogreport_file_summary_splitter0': 100,
             'dialogreport_file_summary_splitter1': 100,
             'dialogreport_code_summary_splitter0': 100,
-            'dialogreport_code_summary_splitter1': 100
+            'dialogreport_code_summary_splitter1': 100,
+            'stylesheet': 'original'
         }
 
     def get_file_texts(self, fileids=None):
@@ -556,6 +643,27 @@ class App(object):
         else:
             cur.execute("select name, id, fulltext, memo, owner, date from source where fulltext is not null order by name")
         keys = 'name', 'id', 'fulltext', 'memo', 'owner', 'date'
+        result = []
+        for row in cur.fetchall():
+            result.append(dict(zip(keys, row)))
+        return result
+
+    def get_journal_texts(self, jids=None):
+        """ Get the texts of all journals as a list of dictionaries.
+        Called by DialogJournals.search_for_text
+        param:
+            jids - a list of jids or None
+        """
+
+        cur = self.conn.cursor()
+        if jids is not None:
+            cur.execute(
+                "select name, jid, jentry, owner, date from journal where jid in (?)",
+                jids
+            )
+        else:
+            cur.execute("select name, jid, jentry, owner, date from journal")
+        keys = 'name', 'jid', 'jentry', 'owner', 'date'
         result = []
         for row in cur.fetchall():
             result.append(dict(zip(keys, row)))
@@ -596,7 +704,6 @@ class MainWindow(QtWidgets.QMainWindow):
     """
 
     project = {"databaseversion": "", "date": "", "memo": "", "about": ""}
-    #dialog_list = []  # keeps active and track of non-modal windows
     recent_projects = []  # a list of recent projects for the qmenu
 
     def __init__(self, app, force_quit=False):
@@ -648,7 +755,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # file cases and journals menu
         self.ui.actionManage_files.triggered.connect(self.manage_files)
-        self.ui.actionManage_files.setShortcut('Alt+F')
+        #self.ui.actionManage_files.setShortcut('Alt+F') Affects code AV function
         self.ui.actionManage_journals.triggered.connect(self.journals)
         self.ui.actionManage_journals.setShortcut('Alt+J')
         self.ui.actionManage_cases.triggered.connect(self.manage_cases)
@@ -670,8 +777,9 @@ class MainWindow(QtWidgets.QMainWindow):
 
         # reports menu
         self.ui.actionCoding_reports.triggered.connect(self.report_coding)
-        self.ui.actionCoding_reports.setShortcut('Ctrl+R')
+        #self.ui.actionCoding_reports.setShortcut('Ctrl+R') Affects code AV function
         self.ui.actionCoding_comparison.triggered.connect(self.report_coding_comparison)
+        self.ui.actionCoding_comparison_by_file.triggered.connect(self.report_compare_coders_by_file)
         self.ui.actionCode_frequencies.triggered.connect(self.report_code_frequencies)
         self.ui.actionView_Graph.triggered.connect(self.view_graph_original)
         self.ui.actionView_Graph.setShortcut('Ctrl+G')
@@ -787,6 +895,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # reports menu
         self.ui.actionCoding_reports.setEnabled(False)
         self.ui.actionCoding_comparison.setEnabled(False)
+        self.ui.actionCoding_comparison_by_file.setEnabled(False)
         self.ui.actionCode_frequencies.setEnabled(False)
         self.ui.actionCode_relations.setEnabled(False)
         self.ui.actionText_mining.setEnabled(False)
@@ -824,6 +933,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # reports menu
         self.ui.actionCoding_reports.setEnabled(True)
         self.ui.actionCoding_comparison.setEnabled(True)
+        self.ui.actionCoding_comparison_by_file.setEnabled(True)
         self.ui.actionCode_frequencies.setEnabled(True)
         self.ui.actionCode_relations.setEnabled(True)
         self.ui.actionSQL_statements.setEnabled(True)
@@ -880,6 +990,13 @@ class MainWindow(QtWidgets.QMainWindow):
         ui = DialogReportCoderComparisons(self.app, self.ui.textEdit)
         self.tab_layout_helper(self.ui.tab_reports, ui)
 
+    def report_compare_coders_by_file(self):
+        """ Compare two coders selection by  file. """
+
+        self.ui.label_reports.hide()
+        ui = DialogCompareCoderByFile(self.app, self.ui.textEdit)
+        self.tab_layout_helper(self.ui.tab_reports, ui)
+
     def report_code_frequencies(self):
         """ Show code frequencies overall and by coder. """
 
@@ -926,7 +1043,7 @@ class MainWindow(QtWidgets.QMainWindow):
     def help(self):
         """ Display manual in browser. """
 
-        webbrowser.open(path + "/GUI/QualCoder_Manual.pdf")
+        webbrowser.open("https://github.com/ccbogel/QualCoder/wiki")
 
     def about(self):
         """ About dialog. """
@@ -1074,23 +1191,21 @@ class MainWindow(QtWidgets.QMainWindow):
          NEED TO TEST RELATIVE EXPORTS, TIMESTAMPS AND TRANSCRIPTION
         """
 
-        Refi_export(self.app, self.ui.textEdit, "project")
-        msg = "NOT FULLY TESTED - EXPERIMENTAL\n"
-        Message(self.app, _("REFI QDA Project export"), msg, "warning").exec_()
+        RefiExport(self.app, self.ui.textEdit, "project")
 
     def REFI_codebook_export(self):
         """ Export the codebook as .qdc
         Follows the REFI standard version 1.0. https://www.qdasoftware.org/
         """
         #
-        Refi_export(self.app, self.ui.textEdit, "codebook")
+        RefiExport(self.app, self.ui.textEdit, "codebook")
 
     def REFI_codebook_import(self):
         """ Import a codebook .qdc into an opened project.
         Follows the REFI-QDA standard version 1.0. https://www.qdasoftware.org/
          """
 
-        Refi_import(self.app, self.ui.textEdit, "qdc")
+        RefiImport(self.app, self.ui.textEdit, "qdc")
 
     def REFI_project_import(self):
         """ Import a qpdx QDA project into a new project space.
@@ -1107,10 +1222,10 @@ class MainWindow(QtWidgets.QMainWindow):
         self.new_project()
         # check project created successfully
         if self.app.project_name == "":
-            Message(self.app, _("Project creation"), _("Project not successfully created"), "warning").exec_()
+            Message(self.app, _("Project creation"), _("REFI-QDA Project not successfully created"), "warning").exec_()
             return
 
-        Refi_import(self.app, self.ui.textEdit, "qdpx")
+        RefiImport(self.app, self.ui.textEdit, "qdpx")
         self.project_summary_report()
 
     def rqda_project_import(self):
@@ -1163,19 +1278,28 @@ class MainWindow(QtWidgets.QMainWindow):
         Note the database does not keep a table specifically for users (coders), instead
         usernames can be freely entered through the settings dialog and are collated from
         coded text, images and a/v.
-        v2 had added column in code_text table to link to avid in code_av table.
+        v2 ha added column in code_text table to link to avid in code_av table.
+        v3 has added columns in code_text, code_image, code_av for important - to mark particular important codings.
         """
 
         self.app = App()
         if self.app.settings['directory'] == "":
             self.app.settings['directory'] = os.path.expanduser('~')
-        self.app.project_path = QtWidgets.QFileDialog.getSaveFileName(self,
+        project_path = QtWidgets.QFileDialog.getSaveFileName(self,
             _("Enter project name"), self.app.settings['directory'], ".qda")[0]
-        if self.app.project_path == "":
+        if project_path == "":
             Message(self.app, _("Project"), _("No project created."), "critical").exec_()
             return
-        if self.app.project_path.find(".qda") == -1:
-            self.app.project_path = self.app.project_path + ".qda"
+
+        # Add suffix to project name if it already exists
+        counter = 0
+        extension = ""
+        while os.path.exists(project_path + extension + ".qda"):
+            print("C", counter, project_path + extension + ".qda")
+            if counter > 0:
+                extension = "_" + str(counter)
+            counter += 1
+        self.app.project_path = project_path + extension + ".qda"
         try:
             os.mkdir(self.app.project_path)
             os.mkdir(self.app.project_path + "/images")
@@ -1184,7 +1308,7 @@ class MainWindow(QtWidgets.QMainWindow):
             os.mkdir(self.app.project_path + "/documents")
         except Exception as e:
             logger.critical(_("Project creation error ") + str(e))
-            Message(self.app, _("Project"), _("Project not successfully created"), "critical").exec_()
+            Message(self.app, _("Project"), self.app.project_path + _(" not successfully created"), "critical").exec_()
             self.app = App()
             return
         self.app.project_name = self.app.project_path.rpartition('/')[2]
@@ -1193,18 +1317,18 @@ class MainWindow(QtWidgets.QMainWindow):
         cur = self.app.conn.cursor()
         cur.execute("CREATE TABLE project (databaseversion text, date text, memo text,about text, bookmarkfile integer, bookmarkpos integer);")
         cur.execute("CREATE TABLE source (id integer primary key, name text, fulltext text, mediapath text, memo text, owner text, date text, unique(name));")
-        cur.execute("CREATE TABLE code_image (imid integer primary key,id integer,x1 integer, y1 integer, width integer, height integer, cid integer, memo text, date text, owner text);")
-        cur.execute("CREATE TABLE code_av (avid integer primary key,id integer,pos0 integer, pos1 integer, cid integer, memo text, date text, owner text);")
-        cur.execute("CREATE TABLE annotation (anid integer primary key, fid integer,pos0 integer, pos1 integer, memo text, owner text, date text);")
+        cur.execute("CREATE TABLE code_image (imid integer primary key,id integer,x1 integer, y1 integer, width integer, height integer, cid integer, memo text, date text, owner text, important integer);")
+        cur.execute("CREATE TABLE code_av (avid integer primary key,id integer,pos0 integer, pos1 integer, cid integer, memo text, date text, owner text, important integer);")
+        cur.execute("CREATE TABLE annotation (anid integer primary key, fid integer,pos0 integer, pos1 integer, memo text, owner text, date text, unique(fid,pos0,pos1,owner));")
         cur.execute("CREATE TABLE attribute_type (name text primary key, date text, owner text, memo text, caseOrFile text, valuetype text);")
         cur.execute("CREATE TABLE attribute (attrid integer primary key, name text, attr_type text, value text, id integer, date text, owner text);")
         cur.execute("CREATE TABLE case_text (id integer primary key, caseid integer, fid integer, pos0 integer, pos1 integer, owner text, date text, memo text);")
         cur.execute("CREATE TABLE cases (caseid integer primary key, name text, memo text, owner text,date text, constraint ucm unique(name));")
         cur.execute("CREATE TABLE code_cat (catid integer primary key, name text, owner text, date text, memo text, supercatid integer, unique(name));")
-        cur.execute("CREATE TABLE code_text (cid integer, fid integer,seltext text, pos0 integer, pos1 integer, owner text, date text, memo text, avid integer, unique(cid,fid,pos0,pos1, owner));")
+        cur.execute("CREATE TABLE code_text (ctid integer primary key, cid integer, fid integer,seltext text, pos0 integer, pos1 integer, owner text, date text, memo text, avid integer, important integer, unique(cid,fid,pos0,pos1, owner));")
         cur.execute("CREATE TABLE code_name (cid integer primary key, name text, memo text, catid integer, owner text,date text, color text, unique(name));")
         cur.execute("CREATE TABLE journal (jid integer primary key, name text, jentry text, date text, owner text);")
-        cur.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", ('v2',datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"),'', qualcoder_version, 0, 0))
+        cur.execute("INSERT INTO project VALUES(?,?,?,?,?,?)", ('v4', datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"), '', qualcoder_version, 0, 0))
         self.app.conn.commit()
         try:
             # get and display some project details
@@ -1233,9 +1357,25 @@ class MainWindow(QtWidgets.QMainWindow):
             self.ui.textEdit.append(str(e))
             self.close_project()
             return
-        # new project, so tell open project NOT to backup, as there will be nothing in there to backup
+        # New project, so tell open project NOT to backup, as there will be nothing in there to backup
         self.open_project(self.app.project_path, "yes")
         self.ui.tabWidget.setCurrentWidget(self.ui.tab_action_log)
+        # Remove widgets from each tab
+        contents = self.ui.tab_reports.layout()
+        if contents:
+            for i in reversed(range(contents.count())):
+                contents.itemAt(i).widget().close()
+                contents.itemAt(i).widget().setParent(None)
+        contents = self.ui.tab_coding.layout()
+        if contents:
+            for i in reversed(range(contents.count())):
+                contents.itemAt(i).widget().close()
+                contents.itemAt(i).widget().setParent(None)
+        contents = self.ui.tab_manage.layout()
+        if contents:
+            for i in reversed(range(contents.count())):
+                contents.itemAt(i).widget().close()
+                contents.itemAt(i).widget().setParent(None)
 
     def change_settings(self):
         """ Change default settings - the coder name, font, font size.
@@ -1246,6 +1386,8 @@ class MainWindow(QtWidgets.QMainWindow):
         current_coder = self.app.settings['codername']
         ui = DialogSettings(self.app)
         ui.exec_()
+        #ss = self.app.merge_settings_with_default_stylesheet(self.app.settings)
+        #self.setStyleSheet(ss)
         self.settings_report()
         font = 'font: ' + str(self.app.settings['fontsize']) + 'pt '
         font += '"' + self.app.settings['font'] + '";'
@@ -1357,14 +1499,13 @@ class MainWindow(QtWidgets.QMainWindow):
         self.fill_recent_projects_menu_actions()
         self.setWindowTitle("QualCoder " + self.app.project_name)
 
-        # check avid column in code_text table
-        # database version < 2
+        # Check avid column in code_text table, v2
         cur = self.app.conn.cursor()
         try:
             cur.execute("select avid from code_text")
         except:
             try:
-                cur.execute("ALTER TABLE code_text ADD avid integer;")
+                cur.execute("ALTER TABLE code_text ADD avid integer")
                 self.app.conn.commit()
             except Exception as e:
                 logger.debug(str(e))
@@ -1372,12 +1513,55 @@ class MainWindow(QtWidgets.QMainWindow):
             cur.execute("select bookmarkfile from project")
         except:
             try:
-                cur.execute("ALTER TABLE project ADD bookmarkfile integer;")
+                cur.execute("ALTER TABLE project ADD bookmarkfile integer")
                 self.app.conn.commit()
-                cur.execute("ALTER TABLE project ADD bookmarkpos integer;")
+                cur.execute("ALTER TABLE project ADD bookmarkpos integer")
                 self.app.conn.commit()
             except Exception as e:
                 logger.debug(str(e))
+        # Check important column in code_text, code_image, code_av v3
+        cur = self.app.conn.cursor()
+        try:
+            cur.execute("select important from code_text")
+        except:
+            try:
+                cur.execute("ALTER TABLE code_text ADD important integer")
+                self.app.conn.commit()
+            except Exception as e:
+                logger.debug(str(e))
+                cur = self.app.conn.cursor()
+        try:
+            cur.execute("select important from code_av")
+        except:
+            try:
+                cur.execute("ALTER TABLE code_av ADD important integer")
+                self.app.conn.commit()
+            except Exception as e:
+                logger.debug(str(e))
+        cur = self.app.conn.cursor()
+        try:
+            cur.execute("select important from code_image")
+        except:
+            try:
+                cur.execute("ALTER TABLE code_image ADD important integer")
+                self.app.conn.commit()
+            except Exception as e:
+                logger.debug(str(e))
+        # database version v4
+        try:
+            cur.execute("select ctid from code_text")
+        except:  # sqlite3.OperationalError as e:
+            cur.execute(
+                "CREATE TABLE code_text2 (ctid integer primary key, cid integer, fid integer,seltext text, pos0 integer, pos1 integer, owner text, date text, memo text, avid integer, important integer, unique(cid,fid,pos0,pos1, owner))")
+            self.app.conn.commit()
+            sql = "insert into code_text2 (cid, fid, seltext, pos0, pos1, owner, date, memo, avid, important) "
+            sql += "select cid, fid, seltext, pos0, pos1, owner, date, memo, avid, important from code_text"
+            cur.execute(sql)
+            self.app.conn.commit()
+            cur.execute("drop table code_text")
+            cur.execute("alter table code_text2 rename to code_text")
+            cur.execute('update project set databaseversion="v4", about=?', [qualcoder_version])
+            self.app.conn.commit()
 
         # Save a date and 24hour stamped backup
         if self.app.settings['backup_on_open'] == 'True' and newproject == "no":
@@ -1626,8 +1810,7 @@ class MainWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(e)
             logger.debug(str(e))
-            self.ui.textEdit.append(_("Could not detect latest release from Github\n") + str(e))
-
+            #self.ui.textEdit.append(_("Could not detect latest release from Github\n") + str(e))
 
 def gui():
     qual_app = App()
@@ -1638,17 +1821,71 @@ def gui():
     QtGui.QFontDatabase.addApplicationFont("GUI/NotoSans-hinted/NotoSans-Bold.ttf")
     stylesheet = qual_app.merge_settings_with_default_stylesheet(settings)
     app.setStyleSheet(stylesheet)
-    # Try and load language settings from file stored in home/.qualcoder/
-    # translator applies to ui designed GUI widgets only
+    pm = QtGui.QPixmap()
+    pm.loadFromData(QtCore.QByteArray.fromBase64(qualcoder32), "png")
+    app.setWindowIcon(QtGui.QIcon(pm))
+    
+    # Use two character language setting
     lang = settings.get('language', 'en')
-    getlang = gettext.translation('en', localedir=path +'/locale', languages=['en'])
-    #if lang != "en":
-    if lang in ["de", "el", "es", "fr", "it", "jp"]:
-        translator = QtCore.QTranslator()
-        translator.load(path + "/locale/" + lang + "/app_" + lang + ".qm")
-        getlang = gettext.translation(lang, localedir=path + '/locale', languages=[lang])
-        app.installTranslator(translator)
-    getlang.install()
+    # Test for pyinstall data files
+    '''if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        print('Running in a PyInstaller bundle')
+    else:
+        print('Running in a normal Python process')'''
+    locale_dir = os.path.join(path, 'locale')
+    # Need to get the external data directory for PyInstaller
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        ext_data_dir = sys._MEIPASS
+        #print("ext data dir: ", ext_data_dir)
+        locale_dir = os.path.join(ext_data_dir, 'qualcoder')
+        locale_dir = os.path.join(locale_dir, 'locale')
+        #locale_dir = os.path.join(locale_dir, lang)
+        #locale_dir = os.path.join(locale_dir, 'LC_MESSAGES')
+    #print("locale dir: ", locale_dir)
+    #print("LISTDIR: ", os.listdir(locale_dir))
+    #getlang = gettext.translation('en', localedir=locale_dir, languages=['en'])
+    translator = gettext.translation(domain='default', localedir=locale_dir, fallback=True)
+    if lang in ["de", "el", "es", "fr", "it", "jp", "pt"]:
+        # qt translator applies to ui designed GUI widgets only
+        qt_locale_dir = os.path.join(locale_dir, lang)
+        qt_locale_file = os.path.join(qt_locale_dir, "app_" + lang + ".qm")
+        #print("qt qm translation file: ", qt_locale_file)
+        qt_translator = QtCore.QTranslator()
+        #qt_translator.load(qt_locale_file)
+        ''' Below for pyinstaller and obtaining app_lang.qm data file from .qualcoder folder
+        A solution to this error [Errno 13] Permission denied:
+        Replace 'lang' with the short language name, e.g. app_de.qm '''
+        if qt_translator.isEmpty():
+            print("trying to load translation qm file from .qualcoder folder")
+            qm = os.path.join(home, '.qualcoder')
+            qm = os.path.join(qm, 'app_' + lang + '.qm')
+            print("qm file located at: ", qm)
+            qt_translator.load(qm)
+            if qt_translator.isEmpty():
+                print("Installing app_" + lang + ".qm to .qualcoder folder")
+                install_language(lang)
+                qt_translator.load(qm)
+
+        app.installTranslator(qt_translator)
+        '''Below for pyinstaller and obtaining mo data file from .qualcoder folder
+        A solution to this [Errno 13] Permission denied:
+        Must have the folder lang/LC_MESSAGES/lang.mo  in the .qualcoder folder
+        Replace 'lang' with the language short name e.g. de, el, es ...
+        '''
+        try:
+            translator = gettext.translation(lang, localedir=locale_dir, languages=[lang])
+            print("locale directory for python translations: ", locale_dir)
+        except Exception as e:
+            print("Error accessing python translations mo file")
+            print(e)
+            print("locale directory for python translations: ", locale_dir)
+            try:
+                print("trying folder: home/.qualcoder/" + lang + "/LC_MESSAGES/" + lang + ".mo")
+                mo_dir = os.path.join(home, '.qualcoder')
+                translator = gettext.translation(lang, localedir=mo_dir, languages=[lang])
+            except:
+                print("No " + lang + ".mo translation file loaded")
+    translator.install()
     ex = MainWindow(qual_app)
     if project_path:
         split_ = project_path.split("|")
@@ -1661,6 +1898,54 @@ def gui():
             proj_path = split_[1]
         ex.open_project(path=proj_path)
     sys.exit(app.exec_())
+
+def install_language(lang):
+    """ Mainly for pyinstaller on Windows, as cnnot access language data files.
+    So, recreate them from base64 data into home/.qualcoder folder.
+    Install Qt translation file into folder .qualcoder/app_lang.qm
+    Install poedit.mo file into folder .qualcoder/lang/LC_MESSAGES/lang.mo
+    """
+
+    qm = os.path.join(home, '.qualcoder')
+    qm = os.path.join(qm, 'app_' + lang + '.qm')
+    qm_data = None
+    mo_data = None
+    if lang == "de":
+        qm_data = de_qm
+        mo_data = de_mo
+    if lang == "el":
+        qm_data = el_qm
+        mo_data = el_mo
+    if lang == "es":
+        qm_data = es_qm
+        mo_data = es_mo
+    if lang == "fr":
+        qm_data = fr_qm
+        mo_data = fr_mo
+    if lang == "it":
+        qm_data = it_qm
+        mo_data = it_mo
+    if lang == "jp":
+        qm_data = jp_qm
+        mo_data = jp_mo
+    if lang == "pt":
+        qm_data = pt_qm
+        mo_data = pt_mo
+    if qm_data is None or mo_data is None:
+        return
+    with open(qm, 'wb') as file_:
+        decoded_data = base64.decodebytes(qm_data)
+        file_.write(decoded_data)
+    mo_path = os.path.join(home, '.qualcoder')
+    mo_path = os.path.join(mo_path, lang)
+    if not os.path.exists(mo_path):
+        os.mkdir(mo_path)
+        mo_path = os.path.join(mo_path, "LC_MESSAGES")
+        os.mkdir(mo_path)
+        mo = os.path.join(mo_path, lang + ".mo")
+        with open(mo, 'wb') as file_:
+            decoded_data = base64.decodebytes(mo_data)
+            file_.write(decoded_data)
 
 
 if __name__ == "__main__":

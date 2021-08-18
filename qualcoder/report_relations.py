@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Copyright (c) 2020 Colin Curtain
+Copyright (c) 2021 Colin Curtain
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -37,9 +37,10 @@ from PyQt5 import QtGui, QtWidgets, QtCore
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QBrush
 
-from GUI.base64_helper import *
-from GUI.ui_dialog_code_relations import Ui_Dialog_CodeRelations
-from select_items import DialogSelectItems
+from .color_selector import TextColor
+from .GUI.base64_helper import *
+from .GUI.ui_dialog_code_relations import Ui_Dialog_CodeRelations
+from .helpers import ExportDirectoryPathDialog, Message
 
 path = os.path.abspath(os.path.dirname(__file__))
 logger = logging.getLogger(__name__)
@@ -98,7 +99,6 @@ class DialogReportRelations(QtWidgets.QDialog):
         pm.loadFromData(QtCore.QByteArray.fromBase64(doc_export_csv_icon), "png")
         self.ui.pushButton_exportcsv.setIcon(QtGui.QIcon(pm))
         self.ui.pushButton_calculate.pressed.connect(self.coder_code_relations)
-        #icon = QtGui.QIcon(QtGui.QPixmap('GUI/cogs_icon.png'))
         pm = QtGui.QPixmap()
         pm.loadFromData(QtCore.QByteArray.fromBase64(cogs_icon), "png")
         self.ui.pushButton_calculate.setIcon(QtGui.QIcon(pm))
@@ -108,7 +108,7 @@ class DialogReportRelations(QtWidgets.QDialog):
         """
 
         self.coder_names = self.app.get_coder_names_in_project()
-        self.codes, self.categories = self.app.get_data()
+        self.codes, self.categories = self.app.get_codes_categories()
 
     def coder_code_relations(self):
         """ Calculate the relations for selected codes for THIS coder or ALL coders.
@@ -124,17 +124,11 @@ class DialogReportRelations(QtWidgets.QDialog):
                 codes_str += i.text(0) + "|"
                 code_ids += "," + i.text(1)[4:]
         if len(sel_codes) < 2:
-            mb = QtWidgets.QMessageBox()
-            mb.setIcon(QtWidgets.QMessageBox.Warning)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            mb.setWindowTitle(_('Selection warning'))
             msg = _("Select 2 or more codes\nUse Ctrl or Shift and mouse click")
-            mb.setText(msg)
-            mb.exec_()
+            Message(self.app, _('Selection warning'), msg, "warning").exec_()
             return
         code_ids = code_ids[1:]
         self.ui.label_codes.setText(_("Codes: ") + codes_str)
-
         self.result_relations = []
         if self.ui.radioButton_this.isChecked():
             self.calculate_relations_for_coder(self.app.settings['codername'], code_ids)
@@ -161,15 +155,7 @@ class DialogReportRelations(QtWidgets.QDialog):
         for r in result:
             file_ids.append(r[0])
             file_ids_str += "," + str(r[0])
-
         if file_ids == []:
-            '''mb = QtWidgets.QMessageBox()
-            mb.setIcon(QtWidgets.QMessageBox.Warning)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            mb.setWindowTitle(_('Selection warning'))
-            msg = _("There are no files containing this combination of codes for " + coder_name)
-            mb.setText(msg)
-            mb.exec_()'''
             return
 
         # To add file names to relation result - makes easier for diplaying results
@@ -177,9 +163,8 @@ class DialogReportRelations(QtWidgets.QDialog):
         sql = "select distinct id, name from source where id in (" + file_ids_str + ")"
         cur.execute(sql)
         file_id_names = cur.fetchall()
-        #print(file_id_names)
 
-        # Need to look at each text file separately,
+        # Look at each text file separately,
         for fid in file_ids:
             filename = ""
             for f in file_id_names:
@@ -458,19 +443,21 @@ class DialogReportRelations(QtWidgets.QDialog):
                 cats.remove(item)
             count += 1
 
-        # add unlinked codes as top level items
+        # Add unlinked codes as top level items
         remove_items = []
         for c in codes:
             if c['catid'] is None:
                 top_item = QtWidgets.QTreeWidgetItem([c['name'], 'cid:' + str(c['cid'])])
                 top_item.setBackground(0, QBrush(QtGui.QColor(c['color']), Qt.SolidPattern))
+                color = TextColor(c['color']).recommendation
+                top_item.setForeground(0, QBrush(QtGui.QColor(color)))
                 top_item.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                 self.ui.treeWidget.addTopLevelItem(top_item)
                 remove_items.append(c)
         for item in remove_items:
             codes.remove(item)
 
-        # add codes as children
+        # Add codes as children
         for c in codes:
             it = QtWidgets.QTreeWidgetItemIterator(self.ui.treeWidget)
             item = it.value()
@@ -478,6 +465,8 @@ class DialogReportRelations(QtWidgets.QDialog):
                 if item.text(1) == 'catid:' + str(c['catid']):
                     child = QtWidgets.QTreeWidgetItem([c['name'], 'cid:' + str(c['cid'])])
                     child.setBackground(0, QBrush(QtGui.QColor(c['color']), Qt.SolidPattern))
+                    color = TextColor(c['color']).recommendation
+                    child.setForeground(0, QBrush(QtGui.QColor(color)))
                     child.setFlags(Qt.ItemIsSelectable | Qt.ItemIsUserCheckable | Qt.ItemIsEnabled)
                     item.addChild(child)
                     c['catid'] = -1  # make unmatchable
@@ -493,22 +482,10 @@ class DialogReportRelations(QtWidgets.QDialog):
 
         shortname = self.app.project_name.split(".qda")[0]
         filename = shortname + "_relations.csv"
-        options = QtWidgets.QFileDialog.DontResolveSymlinks | QtWidgets.QFileDialog.ShowDirsOnly
-        directory = QtWidgets.QFileDialog.getExistingDirectory(None,
-            _("Select directory to save file"), self.app.last_export_directory, options)
-        if directory == "":
+        e = ExportDirectoryPathDialog(self.app, filename)
+        filepath = e.filepath
+        if filepath is None:
             return
-        if directory != self.app.last_export_directory:
-            self.app.last_export_directory = directory
-        filename = directory + "/" + filename
-        if os.path.exists(filename):
-            mb = QtWidgets.QMessageBox()
-            mb.setWindowTitle(_("File exists"))
-            mb.setText(_("Overwrite?"))
-            mb.setStandardButtons(QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            if mb.exec_() == QtWidgets.QMessageBox.No:
-                return
 
         col_names = ["Fid", "Filename", "Code0","Code0_name", "Code0_pos0", "Code0_pos1", "Code1", "Code1_name", "Code1_pos0", "Code1_pos1",
             "Relation", "Minimum", "Maximum", "Overlap0", "Overlap1", "Union0", "Union1", "Distance", "Owner"]
@@ -542,17 +519,12 @@ class DialogReportRelations(QtWidgets.QDialog):
             line += str(row['distance']).replace('None', '') + ","
             line += row['owner'].replace(',', '_')
             data += line + "\n"
-        f = open(filename, 'w')
+        f = open(filepath, 'w')
         f.write(data)
         f.close()
-        logger.info("Report exported to " + filename)
-        mb = QtWidgets.QMessageBox()
-        mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-        mb.setWindowTitle(_('Csv file Export'))
-        msg = filename + _(" exported")
-        mb.setText(msg)
-        mb.exec_()
-        self.parent_textEdit.append(_("Code relations csv file exported to: ") + filename)
+        msg = _("Code relations csv file exported to: ") + filepath
+        Message(self.app, _('Csv file Export'), msg, "information").exec_()
+        self.parent_textEdit.append(msg)
 
     def closeEvent(self, event):
         """ Save splitter dimensions. """

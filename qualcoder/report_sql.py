@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Copyright (c) 2020 Colin Curtain
+Copyright (c) 2021 Colin Curtain
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -35,10 +35,10 @@ from datetime import datetime
 import logging
 import traceback
 
-from GUI.base64_helper import *
-from GUI.ui_dialog_SQL import Ui_Dialog_sql
-from helpers import Message
-from highlighter import Highlighter
+from .GUI.base64_helper import *
+from .GUI.ui_dialog_SQL import Ui_Dialog_sql
+from .helpers import ExportDirectoryPathDialog, Message
+from .highlighter import Highlighter
 
 path = os.path.abspath(os.path.dirname(__file__))
 logger = logging.getLogger(__name__)
@@ -89,12 +89,13 @@ class DialogSQL(QtWidgets.QDialog):
         font = 'font: ' + str(self.app.settings['fontsize']) + 'pt '
         font += '"' + self.app.settings['font'] + '";'
         self.setStyleSheet(font)
-        #self.setWindowTitle("Query: " + self.queryname)
         self.ui.treeWidget.setContextMenuPolicy(Qt.CustomContextMenu)
         highlighter = Highlighter(self.ui.textEdit_sql)
+        if self.app.settings['stylesheet'] == "dark":
+            highlighter.create_rules(dark=True)
         self.ui.textEdit_sql.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.textEdit_sql.customContextMenuRequested.connect(self.sql_menu)
-        # fill textEdit_sql from queryname
+        # Fill textEdit_sql from queryname
         self.ui.textEdit_sql.setText(textEditSql)
         self.ui.tableWidget_results.setContextMenuPolicy(Qt.CustomContextMenu)
         self.ui.tableWidget_results.customContextMenuRequested.connect(self.table_menu)
@@ -108,7 +109,6 @@ class DialogSQL(QtWidgets.QDialog):
         pm.loadFromData(QtCore.QByteArray.fromBase64(cogs_icon), "png")
         self.ui.pushButton_runSQL.setIcon(QtGui.QIcon(pm))
         self.ui.pushButton_export.clicked.connect(self.export_file)
-        #icon = QtGui.QIcon(QtGui.QPixmap('GUI/doc_export_csv_icon.png'))
         pm = QtGui.QPixmap()
         pm.loadFromData(QtCore.QByteArray.fromBase64(doc_export_csv_icon), "png")
         self.ui.pushButton_export.setIcon(QtGui.QIcon(pm))
@@ -131,7 +131,6 @@ class DialogSQL(QtWidgets.QDialog):
         self.ui.splitter.splitterMoved.connect(self.update_sizes)
         self.ui.splitter_2.splitterMoved.connect(self.update_sizes)
 
-
     def update_sizes(self):
         """ Called by splitter resized """
 
@@ -153,44 +152,28 @@ class DialogSQL(QtWidgets.QDialog):
         except Exception as e:
             Message(self.app, _("SQL error"), str(e), "warning").exec_()
             return
-
         results = cur.fetchall()
         col_names = []
         if cur.description is not None:
             col_names = list(map(lambda x: x[0], cur.description))  # gets column names
-        # os.getenv('HOME') does not work on Windows
-        tmp_name = self.app.last_export_directory + "/TEMP.csv"
-        file_tuple = QtWidgets.QFileDialog.getSaveFileName(None, "Save text file", tmp_name)
-        if file_tuple[0] == "":
+        filename = "sql_report.csv"
+        e = ExportDirectoryPathDialog(self.app, filename)
+        filepath = e.filepath
+        if filepath is None:
             return
-        filename = file_tuple[0]
-        tmp = filename.split("/")[-1]
-        directory = filename[:len(filename) - len(tmp)]
-        if directory != self.app.last_export_directory:
-            self.app.last_export_directory = directory
-        if os.path.exists(filename):
-            mb = QtWidgets.QMessageBox()
-            mb.setWindowTitle(_("File exists"))
-            mb.setText(_("Overwrite?"))
-            mb.setStandardButtons(QtWidgets.QMessageBox.Yes|QtWidgets.QMessageBox.No)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            if mb.exec_() == QtWidgets.QMessageBox.No:
-                return
-
         self.delimiter = str(self.ui.comboBox_delimiter.currentText())
         if self.delimiter == "tab":
             self.delimiter = "\t"
         ''' https://stackoverflow.com/questions/39422573/python-writing-weird-unicode-to-csv
-        Using a byte order mark so that other software recognised UTF-8
-        '''
-        f = open(filename, 'w', encoding='utf-8-sig')
-        # write the header row
+        Using a byte order mark so that other software recognised UTF-8 '''
+        f = open(filepath, 'w', encoding='utf-8-sig')
+        # Write the header row
         file_line = ""
         for item in col_names:
             file_line += item + self.delimiter
         file_line = file_line[:len(file_line) - 1]
         f.write(file_line + "\r\n")
-        # write the data rows
+        # Write data rows
         for r, row in enumerate(results):
             file_line = ""
             for item in row:
@@ -201,9 +184,10 @@ class DialogSQL(QtWidgets.QDialog):
             file_line = file_line[:len(file_line) - 1]
             f.write(file_line + "\r\n")
         f.close()
-        self.parent_textEdit.append(_("SQL Results exported to: ") + filename)
+        msg = _("SQL Results exported to: ") + filepath
+        self.parent_textEdit.append(msg)
         self.parent_textEdit.append(_("Query:") + "\n" + sql)
-        Message(self.app, _("Text file export"), filename, "information").exec_()
+        Message(self.app, _("CSV file export"), msg, "information").exec_()
 
     def get_item(self):
         """ Get the selected table name or tablename.fieldname and add to the sql text
@@ -225,9 +209,9 @@ class DialogSQL(QtWidgets.QDialog):
     def run_SQL(self):
         """ Run the sql text and add the results to the results text edit. """
 
-        # clear tableWidget and file data
-        numRows = self.ui.tableWidget_results.rowCount()
-        for row in range(0, numRows):
+        # Clear tableWidget and file data
+        num_rows = self.ui.tableWidget_results.rowCount()
+        for row in range(0, num_rows):
             self.ui.tableWidget_results.removeRow(0)
         self.ui.tableWidget_results.setHorizontalHeaderLabels([""])
         self.file_data = []
@@ -247,7 +231,7 @@ class DialogSQL(QtWidgets.QDialog):
             self.queryTime = "Time:" + str(timediff)
             self.ui.label.setToolTip(self.queryTime)
             self.ui.label.setText(str(len(self.results)) + _(" rows"))
-            #extra messaging where rows will be zero
+            # Extra messaging where rows will be zero
             if self.sql[0:12].upper() == "CREATE TABLE":
                 self.ui.label.setText(_("Table created"))
                 self.app.delete_backup = False
@@ -263,12 +247,12 @@ class DialogSQL(QtWidgets.QDialog):
                 self.ui.label.setText(str(cur.rowcount) + _(" rows updated"))
                 self.app.delete_backup = False
                 self.app.conn.commit()
-            colNames = []
+            col_names = []
             if cur.description is not None:
-                colNames = list(map(lambda x: x[0], cur.description))  # gets column names
-            self.ui.tableWidget_results.setColumnCount(len(colNames))
-            self.ui.tableWidget_results.setHorizontalHeaderLabels(colNames)
-            self.file_data.append(colNames)
+                col_names = list(map(lambda x: x[0], cur.description))  # gets column names
+            self.ui.tableWidget_results.setColumnCount(len(col_names))
+            self.ui.tableWidget_results.setHorizontalHeaderLabels(col_names)
+            self.file_data.append(col_names)
             for row, row_results in enumerate(self.results):
                 self.file_data.append(row_results)
                 self.ui.tableWidget_results.insertRow(row)
@@ -280,8 +264,8 @@ class DialogSQL(QtWidgets.QDialog):
                     self.ui.tableWidget_results.setItem(row, col, cell)
             self.ui.tableWidget_results.resizeColumnsToContents()
             self.ui.tableWidget_results.resizeRowsToContents()
-            sqlString = str(self.sql).upper()
-            if sqlString.find("CREATE ") == 0 or sqlString.find("DROP ") == 0 or sqlString.find("ALTER ") == 0:
+            sql_string = str(self.sql).upper()
+            if sql_string.find("CREATE ") == 0 or sql_string.find("DROP ") == 0 or sql_string.find("ALTER ") == 0:
                 self.get_schema_update_treeWidget()
         except (sqlite3.OperationalError, sqlite3.IntegrityError) as e:
             Message(self.app, _("Error"), str(e), "warning").exec_()
@@ -348,26 +332,27 @@ class DialogSQL(QtWidgets.QDialog):
 
         menu = QtWidgets.QMenu()
         menu.setStyleSheet("QMenu {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-        action_SelectAll = menu.addAction(_("Select all"))
+        action_select_all = menu.addAction(_("Select all"))
         action_copy = menu.addAction(_("Copy"))
         action_paste = menu.addAction(_("Paste"))
         action_delete = menu.addAction(_("Delete"))
-        action_SelectAllFrom = menu.addAction("SELECT * FROM ")
+        action_select_all_from = menu.addAction("SELECT * FROM ")
         action = menu.exec_(self.ui.textEdit_sql.mapToGlobal(position))
         cursor = self.ui.textEdit_sql.textCursor()
 
         if action == action_delete:
             text = cursor.selectedText()
-            text = str(text)
+            if text is None or text == "":
+                return
             start = cursor.position()
             end = cursor.anchor()
             if start > end:
                 tmp = end
                 end = start
                 start = tmp
-            beginText = self.ui.textEdit_sql.toPlainText()[0:start]
-            endText = self.ui.textEdit_sql.toPlainText()[end:len(self.ui.textEdit_sql.toPlainText())]
-            self.ui.textEdit_sql.setText(beginText + endText)
+            start_text = self.ui.textEdit_sql.toPlainText()[0:start]
+            end_text = self.ui.textEdit_sql.toPlainText()[end:len(self.ui.textEdit_sql.toPlainText())]
+            self.ui.textEdit_sql.setText(start_text + end_text)
         if action == action_paste:
             clipboard = QtWidgets.QApplication.clipboard()
             text = clipboard.text()
@@ -377,16 +362,16 @@ class DialogSQL(QtWidgets.QDialog):
             text = str(text)
             clipboard = QtWidgets.QApplication.clipboard()
             clipboard.setText(text)
-        if action == action_SelectAll:
+        if action == action_select_all:
             clipboard = QtWidgets.QApplication.clipboard()
             cursor.setPosition(0)
             cursor.setPosition(len(self.ui.textEdit_sql.toPlainText()),
                 QtGui.QTextCursor.KeepAnchor)
             self.ui.textEdit_sql.setTextCursor(cursor)
-        if action == action_SelectAllFrom:
+        if action == action_select_all_from:
             cursor.insertText("SELECT * FROM ")
 
-    # start table results context menu section
+    # Start of table results context menu section
     def table_menu(self, position):
         """ Context menu for table_results. """
 
@@ -611,5 +596,18 @@ where \n\
 -- code_name.cid in ( code_ids ) -- provide your code ids \n\
 -- and case_text.caseid in ( case_ids ) -- provide your case ids \n\
 -- and \n\
-(code_text.pos0 >= case_text.pos0 and code_text.pos1 <= case_text.pos1)'
- ]
+(code_text.pos0 >= case_text.pos0 and code_text.pos1 <= case_text.pos1)',
+'-- ALL OR SELECTED ANNOTATIONS\nselect annotation.anid as "Annotation ID" , annotation.memo as "Annotation text", \n\
+annotation.fid as "File ID" , source.name as "File name", annotation.pos0 as "Start position", \n\
+annotation.pos1 as "End position", annotation.owner as "Coder name", annotation.date as "Date" from annotation \n\
+left join source on source.id = annotation.fid \n\
+-- DISPLAY ANNOTATIONS FOR SELECTED FILE, UNCOMMENT THE FOLLOWING: \n\
+-- AND source.name = "FILE NAME"',
+'-- ALL OR SELECTED CODINGS MEMOS\nselect code_text.memo as "Coding memo", code_text.cid as "Code ID", code_name.name as "Code name", \n\
+code_text.fid as "File ID", source.name as "File name", code_text.owner as "Coder name", code_text.date as "Date", \n\
+code_text.important as "Important(yes=1, no=0)" from source left join code_text on code_text.fid = source.id \n\
+left join code_name on code_name.cid = code_text.cid where code_text.memo != "" \n\
+-- TO DISPLAY CODING FOR SELECTED CODE OR FILE, UNCOMMENT THE FOLLOWING:\n\
+-- AND code_name.name = "CODE NAME"  -- TO SELECT SPECIFIC CODE\n\
+-- AND source.name = "FILE NAME" -- TO SELECT SPECIFIC FILE'
+]

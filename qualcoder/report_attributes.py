@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
-'''
-Copyright (c) 2019 Colin Curtain
+"""
+Copyright (c) 2021 Colin Curtain
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -24,7 +24,7 @@ THE SOFTWARE.
 Author: Colin Curtain (ccbogel)
 https://github.com/ccbogel/QualCoder
 https://qualcoder.wordpress.com/
-'''
+"""
 
 from PyQt5 import QtCore, QtWidgets
 import logging
@@ -32,7 +32,8 @@ import os
 import sys
 import traceback
 
-from GUI.ui_report_attribute_parameters import Ui_Dialog_report_attribute_parameters
+from .GUI.ui_report_attribute_parameters import Ui_Dialog_report_attribute_parameters
+from .helpers import Message
 
 path = os.path.abspath(os.path.dirname(__file__))
 logger = logging.getLogger(__name__)
@@ -52,10 +53,10 @@ def exception_handler(exception_type, value, tb_obj):
     
 
 class DialogSelectAttributeParameters(QtWidgets.QDialog):
-    ''' Select parameters for attributes to limit coding report results.
+    """ Select parameters for attributes to limit coding report results.
     Parameters are either case-based or file-based.
     The English SQL operators: not, between, etc. cannot be exchanged for another language.
-    '''
+    """
 
     NAME_COLUMN = 0
     CASE_OR_FILE_COLUMN = 1
@@ -66,21 +67,31 @@ class DialogSelectAttributeParameters(QtWidgets.QDialog):
     app = None
     attribute_type = []
     parameters = []
+    limiter = "all"  # all for cases and files, file = file attributes, case = case attributes
 
-    def __init__(self, app, parent=None):
+    def __init__(self, app, limiter="all", parent=None):
 
-        super(DialogSelectAttributeParameters, self).__init__(parent)  # overrride accept method
+        super(DialogSelectAttributeParameters, self).__init__(parent)
         sys.excepthook = exception_handler
         self.app = app
+        self.limiter = limiter
         self.parameters = []
         cur = self.app.conn.cursor()
         sql = "select name, valuetype, memo, caseOrFile from attribute_type"
+        if limiter == "case":
+            sql = "select name, valuetype, memo, 'case' from attribute_type where caseOrFile='case'"
+        if limiter == "file":
+            sql = "select name, valuetype, memo, 'file' from attribute_type where caseOrFile='file'"
         cur.execute(sql)
         result = cur.fetchall()
         self.attribute_type = []
         for row in result:
             self.attribute_type.append({'name': row[0], 'valuetype': row[1],
                 'memo': row[2], 'caseOrFile': row[3]})
+        # Add case name option to files attributes
+        if self.limiter == "file":
+            casenames = {'name': 'case name', 'valuetype': 'character', 'memo': '', 'caseOrFile': 'case'}
+            self.attribute_type.append(casenames)
         QtWidgets.QDialog.__init__(self)
         self.ui = Ui_Dialog_report_attribute_parameters()
         self.ui.setupUi(self)
@@ -104,7 +115,7 @@ class DialogSelectAttributeParameters(QtWidgets.QDialog):
             operator = self.ui.tableWidget.cellWidget(x, self.OPERATOR_COLUMN).currentText()
             if operator == '':
                 values = []
-            if operator in ('<','<=','>','>=','==','like') and len(values) > 1:
+            if operator in ('<', '<=', '>', '>=', '==', 'like') and len(values) > 1:
                values = [values[0]]
             if operator == 'between' and len(values) > 2:
                 values = values[:2]
@@ -147,50 +158,52 @@ class DialogSelectAttributeParameters(QtWidgets.QDialog):
         self.ui.tableWidget.resizeColumnsToContents()
         if y != self.VALUE_LIST_COLUMN:
             return
+        self.ui.tableWidget.blockSignals(True)  # Prevent double opening of Messages on widget changes
         values = self.ui.tableWidget.item(x, y).text()
         values = values.split(';')
         tmp = [i for i in values if i != '']
         values = tmp
         operator = self.ui.tableWidget.cellWidget(x, self.OPERATOR_COLUMN).currentText()
         if operator == '':
+            Message(self.app, _('Warning'), _("No operator was selected"), "warning").exec()
             self.ui.tableWidget.item(x, y).setText('')
-            mb = QtWidgets.QMessageBox()
-            mb.setIcon(QtWidgets.QMessageBox.Warning)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            mb.setWindowTitle(_('Warning'))
-            mb.setText(_("No operator was selected"))
-            mb.exec_()
-            return
         # enforce that value list is only one item for selected operators
         if operator in ('<','<=','>','>=','==','like') and len(values) > 1:
-            mb = QtWidgets.QMessageBox()
-            mb.setIcon(QtWidgets.QMessageBox.Warning)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            mb.setWindowTitle(_('Warning'))
-            mb.setText(_("Too many values given for this operator"))
-            mb.exec_()
+            Message(self.app, _('Warning'), _("Too many values given for this operator"), "warning").exec()
             self.ui.tableWidget.item(x, y).setText(values[0])
         if operator == 'between' and len(values) != 2:
-            mb = QtWidgets.QMessageBox()
-            mb.setIcon(QtWidgets.QMessageBox.Warning)
-            mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-            mb.setWindowTitle(_('Warning'))
-            mb.setText(_("Need 2 values for between"))
-            mb.exec_()
-        # check numeric type
+            Message(self.app, _('Warning'), _("Need 2 values for between"), "warning").exec()
+        # Check numeric type
         type_ = self.ui.tableWidget.item(x, self.TYPE_COLUMN).text()
         if type_ == "numeric":
             for v in values:
                 try:
                     float(v)
                 except ValueError:
-                    mb = QtWidgets.QMessageBox()
-                    mb.setIcon(QtWidgets.QMessageBox.Warning)
-                    mb.setStyleSheet("* {font-size:" + str(self.app.settings['fontsize']) + "pt} ")
-                    mb.setWindowTitle(_('Warning'))
-                    mb.setText(v + _(" is not a number"))
-                    mb.exec_()
+                    Message(self.app, _('Warning'), v + _(" is not a number"), "warning").exec_()
                     self.ui.tableWidget.item(x, y).setText("")
+        self.ui.tableWidget.blockSignals(False)
+
+    def get_tooltip_values(self, name, caseOrFile, valuetype):
+        """ Get values to display in tooltips for the value list column. """
+
+        tt = ""
+        cur = self.app.conn.cursor()
+        if valuetype == "numeric":
+            sql = "select min(cast(value as real)), max(cast(value as real)) from attribute where name=? and attr_type=?"
+            cur.execute(sql, [name, caseOrFile])
+            res = cur.fetchone()
+            tt = _("Minimum: ") + str(res[0]) + "\n"
+            tt += _("Maximum: ") + str(res[1])
+        if valuetype == "character":
+            sql = "select distinct value from attribute where name=? and attr_type=? and length(value)>0 limit 10"
+            cur.execute(sql, [name, caseOrFile])
+            res = cur.fetchall()
+            for r in res:
+                tt += "\n" + r[0]
+            if len(tt) > 1:
+                tt = tt[1:]
+        return tt
 
     def fill_tableWidget(self):
         """ Fill the table widget with attribute name and type. """
@@ -208,10 +221,15 @@ class DialogSelectAttributeParameters(QtWidgets.QDialog):
             item.setFlags(item.flags() ^ QtCore.Qt.ItemIsEditable)
             self.ui.tableWidget.setItem(row, self.TYPE_COLUMN, item)
             item = QtWidgets.QComboBox()
-            item.addItems(['', '<', '>', '<=', '>=', '==', '!=', 'in', 'not in', 'between', 'like'])
+            items = ['', '<', '>', '<=', '>=', '==', '!=', 'in', 'not in', 'between', 'like']
+            if self.limiter == "file" and a['caseOrFile'] == "case":
+                items = ['', '==', '!=', 'like']
+            item.addItems(items)
             self.ui.tableWidget.setCellWidget(row, self.OPERATOR_COLUMN, item)
             item = QtWidgets.QTableWidgetItem('')
             #item.setFlags(item.flags() ^ QtCore.Qt.ItemIsEditable)
+            tt = self.get_tooltip_values(a['name'], a['caseOrFile'], a['valuetype'])
+            item.setToolTip(tt)
             self.ui.tableWidget.setItem(row, self.VALUE_LIST_COLUMN, item)
         self.ui.tableWidget.verticalHeader().setVisible(False)
         self.ui.tableWidget.resizeColumnsToContents()

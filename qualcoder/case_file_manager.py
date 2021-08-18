@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 """
-Copyright (c) 2020 Colin Curtain
+Copyright (c) 2021 Colin Curtain
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -36,11 +36,11 @@ from PyQt5 import QtWidgets, QtCore, QtGui
 from PyQt5.QtCore import Qt
 
 
-from GUI.ui_case_file_manager import Ui_Dialog_case_file_manager
-from GUI.ui_dialog_start_and_end_marks import Ui_Dialog_StartAndEndMarks
-from confirm_delete import DialogConfirmDelete
-from view_av import DialogViewAV
-from view_image import DialogViewImage
+from .GUI.ui_case_file_manager import Ui_Dialog_case_file_manager
+from .confirm_delete import DialogConfirmDelete
+from .helpers import DialogGetStartAndEndMarks, Message
+from .view_av import DialogViewAV
+from .view_image import DialogViewImage
 
 ID = 0
 NAME = 1
@@ -182,7 +182,7 @@ class DialogCaseFileManager(QtWidgets.QDialog):
         # update messages and table widget
         self.get_files()
         self.fill_table()
-        QtWidgets.QMessageBox.information(None, _("File added to case"), msg)
+        Message(self.app, _("File added to case"), msg, "information").exec_()
         self.parent_textEdit.append(msg)
         self.app.delete_backup = False
 
@@ -198,7 +198,7 @@ class DialogCaseFileManager(QtWidgets.QDialog):
         cur = self.app.conn.cursor()
         text_len = 0
         if file_[2] is not None:
-            text_len = len(file_[2])
+            text_len = len(file_[2]) - 1
         link = {'caseid': self.case['caseid'], 'fid': file_[0], 'pos0': 0,
         'pos1': text_len, 'owner': self.app.settings['codername'],
         'date': datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S"), 'memo': ""}
@@ -492,8 +492,8 @@ class DialogCaseFileManager(QtWidgets.QDialog):
                     (item['caseid'], item['fid'], item['pos0'], item['pos1']))
         result = cur.fetchall()
         if len(result) > 0:
-            QtWidgets.QMessageBox.warning(None, _("Already Linked"),
-                _("This segment has already been linked to this case"))
+            Message(self.app, _("Already Linked"),
+                _("This segment has already been linked to this case"), "warning").exec_()
             return
         cur.execute("insert into case_text (caseid,fid, pos0, pos1, owner, date, memo) values(?,?,?,?,?,?,?)"
             , (item['caseid'], item['fid'], item['pos0'], item['pos1'], item['owner'], item['date'], item['memo']))
@@ -614,34 +614,10 @@ class DialogCaseFileManager(QtWidgets.QDialog):
         self.load_case_text()
         self.highlight()
         msg += "\n" + str(entries) + _(" sections found.")
-        QtWidgets.QMessageBox.information(None, _("File added to case"), msg + "\n" + warning_msg + "\n" + already_assigned)
+        Message(self.app, _("File added to case"), msg + "\n" + warning_msg + "\n" + already_assigned).exec_()
         self.parent_textEdit.append(msg)
         self.parent_textEdit.append(warning_msg)
         self.app.delete_backup = False
-
-
-class DialogGetStartAndEndMarks(QtWidgets.QDialog):
-    ''' This dialog gets the start and end mark text to allow file text to be
-    automatically assigned to the currently selected case.
-    It requires the name of the selected case and the filenames - for display purposes only.
-    Methods return the user's choices for the startmark text and the endmark text.
-    '''
-
-    caseName = ""
-
-    def __init__(self, case_name, filenames):
-
-        QtWidgets.QDialog.__init__(self)
-        self.ui = Ui_Dialog_StartAndEndMarks()
-        self.ui.setupUi(self)
-        self.ui.label_case.setText(case_name)
-        self.ui.label_files.setText("Files: " + str(filenames))
-
-    def get_start_mark(self):
-        return str(self.ui.lineEdit_startmark.text())
-
-    def get_end_mark(self):
-        return str(self.ui.lineEdit_endmark.text())
 
 
 if __name__ == "__main__":

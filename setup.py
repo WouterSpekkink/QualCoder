@@ -8,7 +8,7 @@ here = path.abspath(path.dirname(__file__))
 with open(path.join(here, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
-mainscript = 'qualcoder/qualcoder.py'
+mainscript = 'qualcoder/__main__.py'
 OPTIONS = {
     'argv_emulation': True,
     'iconfile': 'qualcoder/GUI/qualcoder.icns'
@@ -25,19 +25,23 @@ if sys.platform == 'darwin':
 elif sys.platform == 'win32':
      extra_options = dict(
          setup_requires=['py2exe'],
-         app=[mainscript],
+         options = {'py2exe': {'bundle_files': 1, 'compressed': True}},
+         windows = [{'script': mainscript}],
      )
+# older code above the bracket:  app=[mainscript],
 else:
      extra_options = dict(
          # Normally unix-like platforms will use "setup.py install"
          # and install the main script as such
-         scripts=[mainscript],
+         entry_points={
+            'console_scripts': ['qualcoder=qualcoder.__main__:gui']
+         },
      )
 
 
 setup(
     name='Qualcoder',
-    version='2.2',
+    version='2.5',
     url='http://github.com/ccbogel/QualCoder',
     author='Colin Curtain',
     author_email='ccbogel@hotmail.com',
@@ -50,8 +54,8 @@ setup(
         'Development Status :: 3 - Alpha'
     ],
     keywords='qualitative data analysis',
-    package_dir={'': 'qualcoder'},
-    python_requires='>=3.5',
+    packages=find_packages(include=['qualcoder','qualcoder.*']),
+    python_requires='>=3.6',
     install_requires=[
         'pyqt5',
         'lxml',
@@ -62,7 +66,6 @@ setup(
         'chardet',
         'openpyxl'
     ],
-    data_files=['qualcoder/locale'],
     package_data={
         'qualcoder':['Codebook.xsd', 'Project-mrt2019.xsd',
         'GUI/*.html', 'GUI/NotoSans-hinted/*.ttf',
@@ -72,5 +75,6 @@ setup(
         'locale/en/LC_MESSAGES/en,mo',]
     },
     zip_safe=False,
+    include_package_data=True,
     **extra_options
 )
