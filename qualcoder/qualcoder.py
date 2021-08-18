@@ -75,13 +75,13 @@ qualcoder_version = "QualCoder 2.4"
 
 path = os.path.abspath(os.path.dirname(__file__))
 home = os.path.expanduser('~')
-if not os.path.exists(home + '/.qualcoder'):
+if not os.path.exists(home + '/.local/share/qualcoder'):
     try:
-        os.mkdir(home + '/.qualcoder')
+        os.mkdir(home + '/.local/share/qualcoder')
     except Exception as e:
         print("Cannot add .qualcoder folder to home directory\n" + str(e))
         raise
-logfile = home + '/.qualcoder/QualCoder.log'
+logfile = home + '/.local/share/qualcoder/QualCoder.log'
 # Hack for Windows 10 PermissionError that stops the rotating file handler, will produce massive files.
 try:
     f = open(logfile, "r")
@@ -139,7 +139,7 @@ class App(object):
         self.last_export_directory = ""
         self.delete_backup = True
         self.delete_backup_path_name = ""
-        self.confighome = os.path.expanduser('~/.qualcoder')
+        self.confighome = os.path.expanduser('~/.local/share/qualcoder')
         self.configpath = os.path.join(self.confighome, 'config.ini')
         self.persist_path = os.path.join(self.confighome, 'recent_projects.txt')
         self.settings = self.load_settings()
